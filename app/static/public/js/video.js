@@ -1554,7 +1554,7 @@
     setStatus('', '未连接');
   }
 
-  async function createEditVideoTask(authHeader, frameDataUrl, editPrompt, editCtx) {
+  async function createEditVideoTasks(authHeader, frameDataUrl, editPrompt, editCtx) {
     const concurrent = getConcurrentValue();
     const res = await fetch('/v1/public/video/start', {
       method: 'POST',
@@ -1582,12 +1582,14 @@
       throw new Error(text || 'create_edit_task_failed');
     }
     const data = await res.json();
-    let taskId = String((data && data.task_id) || '').trim();
-    if (!taskId && data && Array.isArray(data.task_ids) && data.task_ids.length) {
-      taskId = String(data.task_ids[0] || '').trim();
+    if (data && Array.isArray(data.task_ids) && data.task_ids.length > 0) {
+      return data.task_ids
+        .map((v) => String(v || '').trim())
+        .filter(Boolean);
     }
-    if (!taskId) throw new Error('edit_task_id_missing');
-    return taskId;
+    const taskId = String((data && data.task_id) || '').trim();
+    if (taskId) return [taskId];
+    throw new Error('edit_task_id_missing');
   }
 
   async function waitEditVideoResult(taskId, rawPublicKey) {
@@ -1949,25 +1951,42 @@
         edit_session_id: selectedVideoItemId || 'video-edit',
         round: nextRound
       };
-      const taskId = await createEditVideoTask(authHeader, frameInfo.dataUrl, prompt, editCtx);
-      const generatedVideoUrl = await waitEditVideoResult(taskId, normalizeAuthHeader(authHeader));
-      const mergedBlob = await concatVideosLocal(frameInfo.sourceBuffer, generatedVideoUrl);
-      const mergedUrl = URL.createObjectURL(mergedBlob);
-      const item = initPreviewSlot() || null;
-      if (item) {
-        selectedVideoItemId = String(item.dataset.index || '');
-        item.dataset.url = mergedUrl;
-        item.dataset.round = String(nextRound);
-        setPreviewTitle(item, buildHistoryTitle('splice', item.dataset.index || previewCount));
-        const state = { previewItem: item };
-        renderVideoFromUrl(state, mergedUrl);
-        refreshVideoSelectionUi();
+      const taskIds = await createEditVideoTasks(authHeader, frameInfo.dataUrl, prompt, editCtx);
+      const rawPublicKey = normalizeAuthHeader(authHeader);
+      setStatus('connecting', `拼接生成中 (${taskIds.length} 路)`);
+
+      let successCount = 0;
+      let lastMergedUrl = '';
+      for (const taskId of taskIds) {
+        try {
+          const generatedVideoUrl = await waitEditVideoResult(taskId, rawPublicKey);
+          const mergedBlob = await concatVideosLocal(frameInfo.sourceBuffer, generatedVideoUrl);
+          const mergedUrl = URL.createObjectURL(mergedBlob);
+          const item = initPreviewSlot() || null;
+          if (item) {
+            selectedVideoItemId = String(item.dataset.index || '');
+            item.dataset.url = mergedUrl;
+            item.dataset.round = String(nextRound);
+            setPreviewTitle(item, buildHistoryTitle('splice', item.dataset.index || previewCount));
+            const state = { previewItem: item };
+            renderVideoFromUrl(state, mergedUrl);
+            refreshVideoSelectionUi();
+          }
+          lastMergedUrl = mergedUrl;
+          successCount += 1;
+        } catch (singleErr) {
+          // 单路失败继续处理其余路
+        }
       }
-      bindEditVideoSource(mergedUrl);
+
+      if (!successCount || !lastMergedUrl) {
+        throw new Error('edit_all_failed');
+      }
+      bindEditVideoSource(lastMergedUrl);
       scrollToWorkspaceTop();
       editingRound = nextRound;
-      setStatus('connected', `拼接完成（第 ${editingRound} 轮）`);
-      toast('拼接完成，可继续下一轮编辑', 'success');
+      setStatus('connected', `拼接完成（成功 ${successCount}/${taskIds.length}）`);
+      toast(`拼接完成，成功 ${successCount}/${taskIds.length}`, 'success');
     } catch (e) {
       setStatus('error', '拼接失败');
       toast(`拼接失败: ${String(e && e.message ? e.message : e)}`, 'error');
