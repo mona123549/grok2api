@@ -143,6 +143,10 @@
     }
   }
 
+  function debugLog(...args) {
+    console.log('[video-splice-debug]', ...args);
+  }
+
   function dumpFfmpegLogs(context, err, extra) {
     const msg = String(err && err.message ? err.message : err);
     console.groupCollapsed(`[ffmpeg-debug] ${context}: ${msg}`);
@@ -167,7 +171,7 @@
           const message = event && event.message ? String(event.message) : '';
           const line = `[${type}] ${message}`;
           pushFfmpegLog(line);
-          console.debug('[ffmpeg]', line);
+          console.log('[ffmpeg]', line);
         });
         ff.__debugLoggerAttached = true;
       } catch (e) {
@@ -836,6 +840,7 @@
       throw new Error('ffmpeg_runtime_missing');
     }
     ffmpegLoading = true;
+    debugLog('ensureFfmpeg:start');
     try {
       const candidates = {
         coreURL: [
@@ -866,6 +871,7 @@
             loadConfig.workerURL = workerURL;
           }
           await ffmpegInstance.load(loadConfig);
+          debugLog('ensureFfmpeg:loaded');
         }
       }
       if (!ffmpegInstance) {
@@ -873,6 +879,7 @@
       }
       attachFfmpegLogger(ffmpegInstance);
       ffmpegLoaded = true;
+      debugLog('ensureFfmpeg:ready');
       return ffmpegInstance;
     } finally {
       ffmpegLoading = false;
@@ -881,6 +888,7 @@
 
   async function resetFfmpegInstance() {
     if (!ffmpegInstance) return;
+    debugLog('resetFfmpegInstance:start');
     try {
       if (typeof ffmpegInstance.terminate === 'function') {
         await ffmpegInstance.terminate();
@@ -891,6 +899,7 @@
     ffmpegInstance = null;
     ffmpegLoaded = false;
     ffmpegLoading = false;
+    debugLog('resetFfmpegInstance:done');
   }
 
   function ffTaskPrefix(tag) {
@@ -976,6 +985,7 @@
   }
 
   async function ffmpegExec(ff, args) {
+    debugLog('ffmpegExec:run', args.join(' '));
     try {
       if (typeof ff.exec === 'function') {
         return await ff.exec(args);
@@ -986,6 +996,7 @@
       throw new Error('ffmpeg_exec_unsupported');
     } catch (e) {
       dumpFfmpegLogs('ffmpegExec_failed', e, { args });
+      console.error('[video-splice-debug] ffmpegExec:error', args, e);
       throw e;
     }
   }
@@ -1870,6 +1881,7 @@
   }
 
   async function extractFrameAtCurrentPoint(videoUrl) {
+    debugLog('extractFrame:start', { videoUrl, lockedTimestampMs, lockedFrameIndex });
     const srcBuffer = await fetchArrayBuffer(videoUrl);
 
     const runOnce = async () => {
@@ -1896,6 +1908,7 @@
           }
         }
         if (!frameBytes) {
+          debugLog('extractFrame:failedCandidates', { baseMs, candidates });
           throw new Error('extract_frame_failed_near_tail');
         }
         const frameHash = await sha256Hex(frameBytes);
@@ -1931,6 +1944,7 @@
   }
 
   async function concatVideosLocal(sourceBuffer, generatedVideoUrl) {
+    debugLog('concatLocal:start', { generatedVideoUrl, lockedTimestampMs });
     const safeGeneratedUrl = normalizePlayableVideoUrl(generatedVideoUrl);
     const generatedBuffer = await fetchArrayBuffer(safeGeneratedUrl);
     const sourceStable = toStableArrayBuffer(sourceBuffer);
@@ -2019,10 +2033,12 @@
     let lastErr = null;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
+        debugLog('concatLocal:attempt', attempt);
         await resetFfmpegInstance();
         return await runOnce();
       } catch (e) {
         lastErr = e;
+        console.error('[video-splice-debug] concatLocal:attemptError', attempt, e);
         const msg = String(e && e.message ? e.message : e);
         if (msg === 'edit_cancelled') {
           throw e;
@@ -2172,6 +2188,7 @@
   }
 
   async function runSplice() {
+    debugLog('runSplice:start');
     if (editingBusy) {
       toast('拼接任务进行中', 'warning');
       return;
@@ -2309,6 +2326,7 @@
       setStatus('connected', `拼接完成（成功 ${successCount}/${taskIds.length}）`);
       toast(`拼接完成，成功 ${successCount}/${taskIds.length}`, 'success');
     } catch (e) {
+      console.error('[video-splice-debug] runSplice:error', e);
       const msg = String(e && e.message ? e.message : e);
       if (msg === 'edit_cancelled') {
         setStatus('', '未连接');
