@@ -5,12 +5,16 @@ FastAPI 应用初始化和路由注册
 """
 
 from contextlib import asynccontextmanager
+import argparse
 import os
 import platform
 import sys
 from pathlib import Path
+from typing import Dict, List
+import asyncio
 
 from dotenv import load_dotenv
+import httpx
 
 BASE_DIR = Path(__file__).resolve().parent
 APP_DIR = BASE_DIR / "app"
@@ -34,6 +38,7 @@ from app.core.exceptions import register_exception_handlers  # noqa: E402
 from app.core.response_middleware import ResponseLoggerMiddleware  # noqa: E402
 from app.api.v1.chat import router as chat_router  # noqa: E402
 from app.api.v1.image import router as image_router  # noqa: E402
+from app.api.v1.nsfw import router as nsfw_router  # noqa: E402
 from app.api.v1.files import router as files_router  # noqa: E402
 from app.api.v1.models import router as models_router  # noqa: E402
 from app.services.token import get_scheduler  # noqa: E402
@@ -46,6 +51,70 @@ from fastapi.staticfiles import StaticFiles
 setup_logging(
     level=os.getenv("LOG_LEVEL", "INFO"), json_console=False, file_logging=True
 )
+
+
+FFMPEG_VENDOR_DIR = APP_DIR / "static" / "vendor" / "ffmpeg"
+FFMPEG_VENDOR_ASSETS: Dict[str, List[str]] = {
+    "ffmpeg.js": [
+        "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js",
+        "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js",
+    ],
+    "ffmpeg-util.js": [
+        "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js",
+        "https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js",
+    ],
+    "ffmpeg-core.js": [
+        "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
+        "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
+    ],
+    "ffmpeg-core.wasm": [
+        "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
+        "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm",
+    ],
+}
+
+
+async def _download_first_success(
+    client: httpx.AsyncClient, filename: str, urls: List[str], target_path: Path
+) -> bool:
+    for url in urls:
+        try:
+            resp = await client.get(url, follow_redirects=True)
+            if resp.status_code == 200 and resp.content:
+                target_path.write_bytes(resp.content)
+                logger.info(
+                    f"FFmpeg vendor downloaded: {filename} <- {url} ({len(resp.content)} bytes)"
+                )
+                return True
+            logger.warning(
+                f"FFmpeg vendor candidate failed: {filename} <- {url} status={resp.status_code}"
+            )
+        except Exception as e:
+            logger.warning(f"FFmpeg vendor download error: {filename} <- {url}, error={e}")
+    return False
+
+
+async def ensure_ffmpeg_vendor_assets() -> None:
+    """启动时预热 ffmpeg 前端依赖到本地静态目录，避免浏览器跨域/CORS 问题。"""
+    FFMPEG_VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+    timeout = httpx.Timeout(connect=8.0, read=30.0, write=30.0, pool=8.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        tasks = []
+        pending_names: list[str] = []
+        for filename, urls in FFMPEG_VENDOR_ASSETS.items():
+            target = FFMPEG_VENDOR_DIR / filename
+            if target.exists() and target.stat().st_size > 0:
+                logger.info(f"FFmpeg vendor exists: {filename}")
+                continue
+            pending_names.append(filename)
+            tasks.append(_download_first_success(client, filename, urls, target))
+
+        if not tasks:
+            return
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+        failed = [name for name, ok in zip(pending_names, results) if not ok]
+        if failed:
+            logger.warning(f"FFmpeg vendor partial ready, failed={failed}")
 
 
 @asynccontextmanager
@@ -64,6 +133,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Grok2API...")
     logger.info(f"Platform: {platform.system()} {platform.release()}")
     logger.info(f"Python: {sys.version.split()[0]}")
+    await ensure_ffmpeg_vendor_assets()
 
     # 4. 启动 Token 刷新调度器
     refresh_enabled = get_config("token.auto_refresh", True)
@@ -120,6 +190,9 @@ def create_app() -> FastAPI:
         image_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
     )
     app.include_router(
+        nsfw_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
+    )
+    app.include_router(
         models_router, prefix="/v1", dependencies=[Depends(verify_api_key)]
     )
     app.include_router(files_router, prefix="/v1/files")
@@ -143,9 +216,36 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.getenv("SERVER_HOST", "0.0.0.0")
-    port = int(os.getenv("SERVER_PORT", "8000"))
-    workers = int(os.getenv("SERVER_WORKERS", "1"))
+    parser = argparse.ArgumentParser(description="启动 Grok2API 服务")
+    parser.add_argument(
+        "--host",
+        default=os.getenv("SERVER_HOST", "0.0.0.0"),
+        help="监听地址，默认读取 SERVER_HOST 或 0.0.0.0",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("SERVER_PORT", "8000")),
+        help="监听端口，默认读取 SERVER_PORT 或 8000",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.getenv("SERVER_WORKERS", "1")),
+        help="Worker 数量，默认读取 SERVER_WORKERS 或 1",
+    )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="开启热重载（开发模式）",
+    )
+
+    args = parser.parse_args()
+
+    host = args.host
+    port = args.port
+    workers = args.workers
+    reload_enabled = args.reload
 
     # 平台检查
     is_windows = platform.system() == "Windows"
@@ -158,10 +258,19 @@ if __name__ == "__main__":
         )
         workers = 1
 
+    # uvicorn 不支持 reload 与多 worker 同时启用
+    if reload_enabled and workers > 1:
+        logger.warning(
+            f"Reload mode detected. Multiple workers ({workers}) is not supported. "
+            "Using single worker instead."
+        )
+        workers = 1
+
     uvicorn.run(
         "main:app",
         host=host,
         port=port,
         workers=workers,
+        reload=reload_enabled,
         log_level=os.getenv("LOG_LEVEL", "INFO").lower(),
     )
