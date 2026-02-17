@@ -15,6 +15,30 @@ from app.services.token.manager import get_token_manager
 router = APIRouter()
 
 
+def _mask_token_for_log(token: str) -> str:
+    raw = str(token or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= 12:
+        return raw
+    return f"{raw[:6]}...{raw[-6:]}"
+
+
+def _log_nsfw_enable_payload(api_name: str, data: dict) -> None:
+    single = str(data.get("token") or "").strip()
+    batch = data.get("tokens")
+    token_list = [str(t).strip() for t in batch] if isinstance(batch, list) else []
+    token_list = [t for t in token_list if t]
+    preview = [_mask_token_for_log(t) for t in token_list[:5]]
+    payload = {
+        "token": _mask_token_for_log(single) if single else "",
+        "tokens_count": len(token_list),
+        "tokens_preview": preview,
+        "raw_keys": sorted(list(data.keys())) if isinstance(data, dict) else [],
+    }
+    logger.info(f"{api_name} request payload: {payload}")
+
+
 @router.get("/tokens", dependencies=[Depends(verify_app_key)])
 async def get_tokens():
     """获取所有 Token"""
@@ -255,6 +279,7 @@ async def batch_cancel(task_id: str):
 async def enable_nsfw(data: dict):
     """批量开启 NSFW (Unhinged) 模式"""
     try:
+        _log_nsfw_enable_payload("tokens/nsfw/enable", data)
         mgr = await get_token_manager()
 
         tokens = []
@@ -316,6 +341,7 @@ async def enable_nsfw(data: dict):
 @router.post("/tokens/nsfw/enable/async", dependencies=[Depends(verify_app_key)])
 async def enable_nsfw_async(data: dict):
     """批量开启 NSFW (Unhinged) 模式（异步批量 + SSE 进度）"""
+    _log_nsfw_enable_payload("tokens/nsfw/enable/async", data)
     mgr = await get_token_manager()
 
     tokens = []
