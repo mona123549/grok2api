@@ -464,7 +464,6 @@
     actions.appendChild(editBtn);
     actions.appendChild(setBBtn);
     header.appendChild(title);
-    header.appendChild(actions);
 
     const body = document.createElement('div');
     body.className = 'video-item-body';
@@ -475,6 +474,7 @@
 
     item.appendChild(header);
     item.appendChild(body);
+    item.appendChild(actions);
     item.appendChild(link);
     videoStage.appendChild(item);
     videoStage.classList.remove('hidden');

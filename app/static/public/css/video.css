@@ -135,7 +135,7 @@ body {
 }
 
 .history-panel .video-item-actions {
-  margin-top: 8px;
+  margin-top: 10px;
   display: flex;
   justify-content: flex-end;
   gap: 6px;
