@@ -77,6 +77,7 @@
   let selectedVideoUrl = '';
   let editingRound = 0;
   let editingBusy = false;
+  let activeSpliceRun = null;
   let lockedFrameIndex = -1;
   let lockedTimestampMs = 0;
   let lastFrameHash = '';
@@ -126,6 +127,22 @@
     if (editFrameIndex) editFrameIndex.textContent = lockedFrameIndex >= 0 ? String(lockedFrameIndex) : '-';
     if (editTimestampMs) editTimestampMs.textContent = String(Math.max(0, Math.round(lockedTimestampMs)));
     if (editFrameHash) editFrameHash.textContent = shortHash(lastFrameHash);
+  }
+
+  function setSpliceButtonState(state) {
+    if (!spliceBtn) return;
+    if (state === 'running') {
+      spliceBtn.disabled = false;
+      spliceBtn.textContent = '中止拼接';
+      return;
+    }
+    if (state === 'stopping') {
+      spliceBtn.disabled = true;
+      spliceBtn.textContent = '中止中...';
+      return;
+    }
+    spliceBtn.disabled = false;
+    spliceBtn.textContent = '拼接视频';
   }
 
   function updateHistoryCount() {
@@ -1592,19 +1609,37 @@
     throw new Error('edit_task_id_missing');
   }
 
-  async function waitEditVideoResult(taskId, rawPublicKey) {
+  async function waitEditVideoResult(taskId, rawPublicKey, spliceRun) {
     return await new Promise((resolve, reject) => {
+      if (spliceRun && spliceRun.cancelled) {
+        reject(new Error('edit_cancelled'));
+        return;
+      }
       const url = buildSseUrl(taskId, rawPublicKey);
       const es = new EventSource(url);
       let buffer = '';
       let rawEventBuffer = '';
       let done = false;
+      if (spliceRun && spliceRun.sources) {
+        spliceRun.sources.add(es);
+      }
 
       const closeSafe = () => {
         try { es.close(); } catch (e) { /* ignore */ }
+        if (spliceRun && spliceRun.sources) {
+          spliceRun.sources.delete(es);
+        }
       };
 
       es.onmessage = (event) => {
+        if (spliceRun && spliceRun.cancelled) {
+          if (!done) {
+            done = true;
+            closeSafe();
+            reject(new Error('edit_cancelled'));
+          }
+          return;
+        }
         if (!event || !event.data) return;
         rawEventBuffer += String(event.data);
         if (event.data === '[DONE]') {
@@ -1650,9 +1685,47 @@
         if (done) return;
         closeSafe();
         done = true;
+        if (spliceRun && spliceRun.cancelled) {
+          reject(new Error('edit_cancelled'));
+          return;
+        }
         reject(new Error('edit_sse_error'));
       };
     });
+  }
+
+  async function requestCancelSplice() {
+    const run = activeSpliceRun;
+    if (!run || run.done) return;
+    if (run.cancelling) return;
+    run.cancelled = true;
+    run.cancelling = true;
+    setStatus('connecting', '正在中止拼接...');
+    setSpliceButtonState('stopping');
+    if (run.sources && run.sources.size) {
+      run.sources.forEach((es) => {
+        try { es.close(); } catch (e) { /* ignore */ }
+      });
+      run.sources.clear();
+    }
+    if (run.taskIds && run.taskIds.length) {
+      try {
+        await stopVideoTask(run.taskIds, run.authHeader);
+      } catch (e) {
+        // ignore
+      }
+    }
+    if (run.placeholders) {
+      run.placeholders.forEach((item) => {
+        if (!item) return;
+        const url = String(item.dataset.url || '').trim();
+        if (!url) {
+          removePreviewItem(item);
+        }
+      });
+    }
+    run.cancelling = false;
+    toast('已中止拼接任务', 'warning');
   }
 
   async function extractFrameAtCurrentPoint(videoUrl) {
@@ -1936,7 +2009,17 @@
       return;
     }
     editingBusy = true;
-    if (spliceBtn) spliceBtn.disabled = true;
+    const spliceRun = {
+      cancelled: false,
+      cancelling: false,
+      done: false,
+      authHeader,
+      taskIds: [],
+      placeholders: new Map(),
+      sources: new Set(),
+    };
+    activeSpliceRun = spliceRun;
+    setSpliceButtonState('running');
     setStatus('connecting', '截帧与拼接处理中');
     try {
       const sourceVideoUrl = String(selectedVideoUrl || '').trim();
@@ -1952,17 +2035,31 @@
         round: nextRound
       };
       const taskIds = await createEditVideoTasks(authHeader, frameInfo.dataUrl, prompt, editCtx);
+      spliceRun.taskIds = taskIds.slice();
       const rawPublicKey = normalizeAuthHeader(authHeader);
       setStatus('connecting', `拼接生成中 (${taskIds.length} 路)`);
+      for (const taskId of taskIds) {
+        const item = initPreviewSlot() || null;
+        if (!item) continue;
+        spliceRun.placeholders.set(taskId, item);
+        setPreviewTitle(item, buildHistoryTitle('splice', item.dataset.index || previewCount));
+      }
 
       let successCount = 0;
       let lastMergedUrl = '';
       for (const taskId of taskIds) {
+        if (spliceRun.cancelled) break;
+        const item = spliceRun.placeholders.get(taskId) || null;
         try {
-          const generatedVideoUrl = await waitEditVideoResult(taskId, rawPublicKey);
+          const generatedVideoUrl = await waitEditVideoResult(taskId, rawPublicKey, spliceRun);
+          if (spliceRun.cancelled) {
+            throw new Error('edit_cancelled');
+          }
           const mergedBlob = await concatVideosLocal(frameInfo.sourceBuffer, generatedVideoUrl);
+          if (spliceRun.cancelled) {
+            throw new Error('edit_cancelled');
+          }
           const mergedUrl = URL.createObjectURL(mergedBlob);
-          const item = initPreviewSlot() || null;
           if (item) {
             selectedVideoItemId = String(item.dataset.index || '');
             item.dataset.url = mergedUrl;
@@ -1975,10 +2072,18 @@
           lastMergedUrl = mergedUrl;
           successCount += 1;
         } catch (singleErr) {
-          // 单路失败继续处理其余路
+          if (item) {
+            removePreviewItem(item);
+          }
+          if (String(singleErr && singleErr.message || '') === 'edit_cancelled') {
+            break;
+          }
         }
       }
 
+      if (spliceRun.cancelled) {
+        throw new Error('edit_cancelled');
+      }
       if (!successCount || !lastMergedUrl) {
         throw new Error('edit_all_failed');
       }
@@ -1988,11 +2093,19 @@
       setStatus('connected', `拼接完成（成功 ${successCount}/${taskIds.length}）`);
       toast(`拼接完成，成功 ${successCount}/${taskIds.length}`, 'success');
     } catch (e) {
-      setStatus('error', '拼接失败');
-      toast(`拼接失败: ${String(e && e.message ? e.message : e)}`, 'error');
+      if (String(e && e.message ? e.message : e) === 'edit_cancelled') {
+        setStatus('', '未连接');
+      } else {
+        setStatus('error', '拼接失败');
+        toast(`拼接失败: ${String(e && e.message ? e.message : e)}`, 'error');
+      }
     } finally {
+      spliceRun.done = true;
+      if (activeSpliceRun === spliceRun) {
+        activeSpliceRun = null;
+      }
       editingBusy = false;
-      if (spliceBtn) spliceBtn.disabled = false;
+      setSpliceButtonState('idle');
     }
   }
 
@@ -2138,6 +2251,10 @@
 
   if (spliceBtn) {
     spliceBtn.addEventListener('click', () => {
+      if (activeSpliceRun && !activeSpliceRun.done) {
+        requestCancelSplice();
+        return;
+      }
       runSplice();
     });
   }
