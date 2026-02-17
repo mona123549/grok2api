@@ -135,6 +135,17 @@
     }
   }
 
+  function updateManualActionsVisibility() {
+    const hasWorkspaceVideo = Boolean(String(selectedVideoUrl || '').trim());
+    if (pickMergeVideoBtn) {
+      pickMergeVideoBtn.style.display = hasWorkspaceVideo ? '' : 'none';
+    }
+    if (directMergeBtn) {
+      directMergeBtn.style.display = hasWorkspaceVideo ? '' : 'none';
+      directMergeBtn.disabled = !hasWorkspaceVideo;
+    }
+  }
+
   function getParentMemoryApi() {
     return window.ParentPostMemory || null;
   }
@@ -400,6 +411,7 @@
       closeEditPanel();
       updateMergeLabels();
       updateHistoryCount();
+      updateManualActionsVisibility();
     }
     if (durationValue) {
       durationValue.textContent = '耗时 -';
@@ -1032,6 +1044,7 @@
     lastFrameHash = '';
     setEditMeta();
     updateMergeLabels();
+    updateManualActionsVisibility();
     bindMergeVideoA(safeUrl);
   }
 
@@ -2341,6 +2354,8 @@
 
   updateMeta();
   updateMergeLabels();
+  updateHistoryCount();
+  updateManualActionsVisibility();
   if (imageUrlInput && imageUrlInput.value.trim()) {
     const resolved = resolveReferenceByText(imageUrlInput.value.trim());
     setReferencePreview(resolved.url || resolved.sourceUrl || imageUrlInput.value.trim(), resolved.parentPostId || '');
