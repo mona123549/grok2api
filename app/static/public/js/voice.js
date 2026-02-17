@@ -5,6 +5,8 @@
   let Track;
   let room = null;
   let visualizerTimer = null;
+  let isConnecting = false;
+  let suppressDisconnectLog = false;
 
   const startBtn = document.getElementById('startBtn');
   const stopBtn = document.getElementById('stopBtn');
@@ -122,12 +124,269 @@
     throw new Error(`当前环境不支持麦克风权限，${secureHint}`);
   }
 
+  function getLivekitHost(rawUrl) {
+    if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
+      return '-';
+    }
+    try {
+      return new URL(rawUrl).host || rawUrl;
+    } catch (err) {
+      return rawUrl;
+    }
+  }
+
+  function normalizeLivekitUrl(rawUrl, fallback = '') {
+    if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
+      return fallback;
+    }
+    const value = rawUrl.trim();
+    const withProtocol = value.includes('://') ? value : `wss://${value}`;
+    try {
+      const u = new URL(withProtocol);
+      if (!u.protocol.startsWith('ws')) {
+        return fallback;
+      }
+      const path = (u.pathname || '').replace(/\/+$/, '');
+      return `${u.protocol}//${u.host}${path}`;
+    } catch (err) {
+      return fallback;
+    }
+  }
+
+  function normalizeLivekitUrls(rawUrls, fallbackUrl = 'wss://livekit.grok.com') {
+    const result = [];
+    const push = (value) => {
+      const normalized = normalizeLivekitUrl(value, '');
+      if (!normalized || result.includes(normalized)) {
+        return;
+      }
+      result.push(normalized);
+    };
+
+    if (Array.isArray(rawUrls)) {
+      for (const value of rawUrls) {
+        push(value);
+      }
+    } else {
+      push(rawUrls);
+    }
+
+    push(fallbackUrl);
+    if (!result.length) {
+      result.push('wss://livekit.grok.com');
+    }
+    return result;
+  }
+
+  function isSignalProxyUrl(rawUrl) {
+    try {
+      const parsed = new URL(rawUrl);
+      const path = (parsed.pathname || '').replace(/\/+$/, '');
+      return path.endsWith('/voice/signal') || path.endsWith('/voice/signal/rtc');
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function normalizeIceServers(raw) {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    const normalized = [];
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const urlsRaw = item.urls || item.url;
+      let urls = [];
+      if (typeof urlsRaw === 'string') {
+        const value = urlsRaw.trim();
+        if (value) {
+          urls = [value];
+        }
+      } else if (Array.isArray(urlsRaw)) {
+        urls = urlsRaw
+          .filter((u) => typeof u === 'string')
+          .map((u) => u.trim())
+          .filter((u) => u.length > 0);
+      }
+      if (!urls.length) {
+        continue;
+      }
+
+      const entry = { urls };
+      if (typeof item.username === 'string' && item.username.trim()) {
+        entry.username = item.username.trim();
+      }
+      if (item.credential !== undefined && item.credential !== null) {
+        entry.credential = item.credential;
+      }
+      normalized.push(entry);
+    }
+    return normalized;
+  }
+
+  function buildConnectOptions(iceServers, forceRelay = false) {
+    const options = {
+      autoSubscribe: true,
+      maxRetries: 1,
+      websocketTimeout: 30000,
+      peerConnectionTimeout: 20000
+    };
+    const rtcConfig = {};
+    if (Array.isArray(iceServers) && iceServers.length > 0) {
+      rtcConfig.iceServers = iceServers;
+    }
+    if (forceRelay) {
+      rtcConfig.iceTransportPolicy = 'relay';
+    }
+    if (Object.keys(rtcConfig).length > 0) {
+      options.rtcConfig = rtcConfig;
+    }
+    return options;
+  }
+
+  function buildCandidateUrls(rawUrls) {
+    const seeds = Array.isArray(rawUrls) ? rawUrls : [rawUrls];
+    const candidates = [];
+    const push = (u) => {
+      if (!u || candidates.includes(u)) {
+        return;
+      }
+      candidates.push(u);
+    };
+
+    for (const rawUrl of seeds) {
+      const main = normalizeLivekitUrl(rawUrl, '').replace(/\/+$/, '');
+      if (!main) {
+        continue;
+      }
+
+      push(main);
+      if (main.endsWith('/rtc')) {
+        push(main.slice(0, -4));
+      } else {
+        push(`${main}/rtc`);
+      }
+
+      // 某些移动网络对默认端口推断不稳定，追加 :443 变体做兜底。
+      try {
+        const parsed = new URL(main);
+        if (parsed.protocol === 'wss:' && !parsed.port) {
+          const base443 = `${parsed.protocol}//${parsed.hostname}:443`;
+          const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '';
+          push(`${base443}${path}`);
+          if (path.endsWith('/rtc')) {
+            push(base443);
+          } else {
+            push(`${base443}/rtc`);
+          }
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+    if (!candidates.length) {
+      push('wss://livekit.grok.com');
+      push('wss://livekit.grok.com/rtc');
+    }
+    return candidates;
+  }
+
+  function bindRoomEvents(targetRoom) {
+    targetRoom.on(RoomEvent.ParticipantConnected, (p) => log(`参与者已连接: ${p.identity}`));
+    targetRoom.on(RoomEvent.ParticipantDisconnected, (p) => log(`参与者已断开: ${p.identity}`));
+    targetRoom.on(RoomEvent.TrackSubscribed, (track) => {
+      log(`订阅音轨: ${track.kind}`);
+      if (track.kind === Track.Kind.Audio) {
+        const element = track.attach();
+        element.autoplay = true;
+        element.playsInline = true;
+        if (audioRoot) {
+          audioRoot.appendChild(element);
+        } else {
+          document.body.appendChild(element);
+        }
+      }
+    });
+
+    targetRoom.on(RoomEvent.Disconnected, () => {
+      if (!suppressDisconnectLog) {
+        log('已断开连接');
+      }
+      if (!isConnecting) {
+        resetUI();
+      }
+    });
+  }
+
+  function createRoomInstance() {
+    const targetRoom = new Room({
+      adaptiveStream: true,
+      dynacast: true
+    });
+    bindRoomEvents(targetRoom);
+    return targetRoom;
+  }
+
+  async function connectWithFallbacks(rawUrls, token, iceServers) {
+    const urlCandidates = buildCandidateUrls(rawUrls);
+    const strategies = [{ forceRelay: false, label: '默认' }];
+    if (Array.isArray(iceServers) && iceServers.length > 0) {
+      strategies.push({ forceRelay: true, label: 'relay' });
+    }
+
+    let lastError = null;
+    let attempt = 0;
+
+    suppressDisconnectLog = true;
+    try {
+      for (const candidateUrl of urlCandidates) {
+        for (const strategy of strategies) {
+          attempt += 1;
+          const connectOptions = buildConnectOptions(iceServers, strategy.forceRelay);
+          log(`尝试连接 #${attempt} (${strategy.label}): ${candidateUrl}`);
+
+          room = createRoomInstance();
+          try {
+            await room.connect(candidateUrl, token, connectOptions);
+            return {
+              usedUrl: candidateUrl,
+              usedProxy: isSignalProxyUrl(candidateUrl),
+              usedRelay: strategy.forceRelay,
+              attempts: attempt
+            };
+          } catch (err) {
+            lastError = err;
+            const message = err && err.message ? err.message : String(err || '');
+            log(`连接失败 #${attempt} (${strategy.label}): ${message}`, 'warn');
+            try {
+              await room.disconnect();
+            } catch (disconnectErr) {
+              // ignore
+            }
+            room = null;
+          }
+        }
+      }
+    } finally {
+      suppressDisconnectLog = false;
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+    throw new Error('连接失败：未找到可用连接策略');
+  }
+
   async function startSession() {
     if (!ensureLiveKit()) {
       return;
     }
 
+    let localTracks = [];
     try {
+      isConnecting = true;
       const authHeader = await ensurePublicKey();
       if (authHeader === null) {
         toast('请先配置 Public Key', 'error');
@@ -156,53 +415,73 @@
         throw new Error(`获取 Token 失败: ${response.status}`);
       }
 
-      const { token, url } = await response.json();
+      const payload = await response.json();
+      const token = typeof payload.token === 'string' ? payload.token.trim() : '';
+      const url = typeof payload.url === 'string' && payload.url.trim()
+        ? payload.url.trim()
+        : 'wss://livekit.grok.com';
+      const urls = normalizeLivekitUrls(payload.urls, url);
+      const signalProxyUrl = normalizeLivekitUrl(payload.signal_proxy_url || '', '');
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+      const connectUrlSeeds = [];
+      if (signalProxyUrl && isMobile) {
+        connectUrlSeeds.push(signalProxyUrl);
+      }
+      connectUrlSeeds.push(...urls);
+      if (signalProxyUrl && !isMobile) {
+        connectUrlSeeds.push(signalProxyUrl);
+      }
+      const iceServers = normalizeIceServers(payload.ice_servers);
+      const livekitHost = getLivekitHost(connectUrlSeeds[0] || url);
+      if (!token) {
+        throw new Error('服务端未返回有效 Token');
+      }
       log(`获取 Token 成功 (${voiceSelect.value}, ${personalitySelect.value}, ${speedRange.value}x)`);
+      log(`连接服务器: ${livekitHost}${iceServers.length ? `, ICE=${iceServers.length}` : ''}`);
+      if (signalProxyUrl) {
+        log(`signal 代理已就绪: ${signalProxyUrl}${isMobile ? ' (移动端优先)' : ' (回退使用)'}`);
+      }
 
-      room = new Room({
-        adaptiveStream: true,
-        dynacast: true
-      });
+      log('正在请求麦克风权限...');
+      ensureMicSupport();
+      localTracks = await createLocalTracks({ audio: true, video: false });
+      log('麦克风权限已授权');
 
-      room.on(RoomEvent.ParticipantConnected, (p) => log(`参与者已连接: ${p.identity}`));
-      room.on(RoomEvent.ParticipantDisconnected, (p) => log(`参与者已断开: ${p.identity}`));
-      room.on(RoomEvent.TrackSubscribed, (track) => {
-        log(`订阅音轨: ${track.kind}`);
-        if (track.kind === Track.Kind.Audio) {
-          const element = track.attach();
-          if (audioRoot) {
-            audioRoot.appendChild(element);
-          } else {
-            document.body.appendChild(element);
-          }
-        }
-      });
-
-      room.on(RoomEvent.Disconnected, () => {
-        log('已断开连接');
-        resetUI();
-      });
-
-      await room.connect(url, token);
-      log('已连接到 LiveKit 服务器');
+      const connectResult = await connectWithFallbacks(connectUrlSeeds, token, iceServers);
+      if (connectResult.usedRelay) {
+        log('relay 模式连接成功', 'warn');
+      }
+      if (connectResult.usedProxy) {
+        log('通过同域 signal 代理连接成功', 'warn');
+      }
+      log(`已连接到 LiveKit 服务器（尝试 ${connectResult.attempts} 次）`);
 
       setStatus('connected', '通话中');
       setButtons(true);
 
-      log('正在开启麦克风...');
-      ensureMicSupport();
-      const tracks = await createLocalTracks({ audio: true, video: false });
-      for (const track of tracks) {
+      for (const track of localTracks) {
         await room.localParticipant.publishTrack(track);
       }
       log('语音已开启');
       toast('语音连接成功', 'success');
     } catch (err) {
+      for (const track of localTracks) {
+        try {
+          track.stop();
+        } catch (stopErr) {
+          // ignore
+        }
+      }
       const message = err && err.message ? err.message : '连接失败';
       log(`错误: ${message}`, 'error');
+      if (/could not establish pc connection/i.test(message)) {
+        log('提示: 该错误通常与网络环境或 ICE/STUN/TURN 配置相关', 'warn');
+      }
       toast(message, 'error');
       setStatus('error', '连接错误');
       startBtn.disabled = false;
+    } finally {
+      isConnecting = false;
     }
   }
 

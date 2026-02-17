@@ -116,7 +116,11 @@ const LOCALE_MAP = {
 
   "voice": {
     "label": "语音配置",
-    "timeout": { title: "请求超时", desc: "Voice 请求超时时间（秒）。" }
+    "timeout": { title: "请求超时", desc: "Voice 请求超时时间（秒）。" },
+    "livekit_url": { title: "LiveKit 地址", desc: "优先使用的 LiveKit 信令地址，留空则使用上游返回值。" },
+    "livekit_urls": { title: "LiveKit 地址列表", desc: "可配置多个信令地址，连接时会按顺序回退。" },
+    "signal_proxy_enabled": { title: "Signal 代理", desc: "开启后返回同域 WebSocket 代理地址，移动端可优先尝试。" },
+    "signal_proxy_url": { title: "代理地址", desc: "同域 signal 代理的自定义地址，留空将自动按当前域名生成。" }
   },
 
 
