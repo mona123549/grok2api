@@ -1100,12 +1100,15 @@
     if (!(content instanceof HTMLElement)) return;
     const anchor = cacheModalAnchorEl instanceof HTMLElement ? cacheModalAnchorEl : null;
     if (!anchor) return;
+    content.style.right = 'auto';
+    content.style.bottom = 'auto';
+    content.style.transform = 'none';
     const rect = anchor.getBoundingClientRect();
     const margin = 8;
     const vw = window.innerWidth || document.documentElement.clientWidth || 0;
     const vh = window.innerHeight || document.documentElement.clientHeight || 0;
     const width = Math.min(560, Math.max(280, vw - 24));
-    let left = rect.left;
+    let left = rect.left + (rect.width / 2) - (width / 2);
     if (left + width > vw - 12) {
       left = vw - 12 - width;
     }
@@ -1125,6 +1128,7 @@
     cacheVideoModal.classList.remove('hidden');
     cacheVideoModal.classList.add('is-open');
     positionCacheVideoModal();
+    requestAnimationFrame(() => positionCacheVideoModal());
   }
 
   function closeCacheVideoModal() {

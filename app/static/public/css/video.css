@@ -674,6 +674,12 @@ body {
 
 #cacheVideoModal .modal-content {
   position: fixed;
+  left: 12px;
+  top: 12px;
+  right: auto;
+  bottom: auto;
+  margin: 0;
+  transform: none;
   width: min(560px, calc(100vw - 24px));
   max-height: min(72vh, 560px);
   border-radius: 12px;
