@@ -92,6 +92,13 @@ body {
   gap: 20px;
 }
 
+/* 生成设置卡片始终随文档流滚动，禁止任何置顶行为 */
+.video-main-left > .video-card:first-child {
+  position: static !important;
+  top: auto !important;
+  z-index: auto !important;
+}
+
 .history-panel .panel-head {
   display: flex;
   align-items: center;
