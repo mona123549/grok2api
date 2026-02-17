@@ -178,6 +178,7 @@ class VideoStartRequest(BaseModel):
     parent_post_id: Optional[str] = None
     source_image_url: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    edit_context: Optional[Dict[str, Any]] = None
 
 
 @router.post("/video/start", dependencies=[Depends(verify_public_key)])
@@ -243,6 +244,20 @@ async def public_video_start(data: VideoStartRequest):
                 status_code=400,
                 detail=f"reasoning_effort must be one of {sorted(allowed)}",
             )
+    edit_context = data.edit_context or {}
+    if not isinstance(edit_context, dict):
+        raise HTTPException(status_code=400, detail="edit_context must be an object")
+    # 限制 edit_context 仅用于审计字段，避免日志/请求体膨胀。
+    if len(orjson.dumps(edit_context)) > 8192:
+        raise HTTPException(status_code=400, detail="edit_context too large")
+    if edit_context:
+        logger.info(
+            "Public video edit context: "
+            f"source_video_url={str(edit_context.get('source_video_url') or '')[:120]}, "
+            f"splice_at_ms={edit_context.get('splice_at_ms')}, "
+            f"frame_index={edit_context.get('frame_index')}, "
+            f"round={edit_context.get('round')}"
+        )
 
     task_ids: List[str] = []
     for _ in range(concurrent):

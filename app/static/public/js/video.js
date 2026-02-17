@@ -2,6 +2,21 @@
   const startBtn = document.getElementById('startBtn');
   const stopBtn = document.getElementById('stopBtn');
   const clearBtn = document.getElementById('clearBtn');
+  const enterEditBtn = document.getElementById('enterEditBtn');
+  const editPanel = document.getElementById('editPanel');
+  const editHint = document.getElementById('editHint');
+  const editBody = document.getElementById('editBody');
+  const cancelEditBtn = document.getElementById('cancelEditBtn');
+  const editVideo = document.getElementById('editVideo');
+  const editTimeline = document.getElementById('editTimeline');
+  const editTimeText = document.getElementById('editTimeText');
+  const editDurationText = document.getElementById('editDurationText');
+  const editFrameIndex = document.getElementById('editFrameIndex');
+  const editTimestampMs = document.getElementById('editTimestampMs');
+  const editFrameHash = document.getElementById('editFrameHash');
+  const editLengthSelect = document.getElementById('editLengthSelect');
+  const editPromptInput = document.getElementById('editPromptInput');
+  const spliceBtn = document.getElementById('spliceBtn');
   const promptInput = document.getElementById('promptInput');
   const imageUrlInput = document.getElementById('imageUrlInput');
   const parentPostInput = document.getElementById('parentPostInput');
@@ -42,12 +57,45 @@
   let lastProgress = 0;
   let previewCount = 0;
   let refDragCounter = 0;
+  let selectedVideoItemId = '';
+  let selectedVideoUrl = '';
+  let editingRound = 0;
+  let editingBusy = false;
+  let lockedFrameIndex = -1;
+  let lockedTimestampMs = 0;
+  let lastFrameHash = '';
+  let ffmpegInstance = null;
+  let ffmpegLoaded = false;
+  let ffmpegLoading = false;
   const DEFAULT_REASONING_EFFORT = 'low';
+  const EDIT_TIMELINE_MAX = 100000;
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
       showToast(message, type);
     }
+  }
+
+  function formatMs(ms) {
+    const safe = Math.max(0, Number(ms) || 0);
+    const totalSeconds = Math.floor(safe / 1000);
+    const milli = Math.floor(safe % 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(milli).padStart(3, '0')}`;
+  }
+
+  function shortHash(value) {
+    const raw = String(value || '');
+    if (!raw) return '-';
+    if (raw.length <= 14) return raw;
+    return `${raw.slice(0, 8)}...${raw.slice(-6)}`;
+  }
+
+  function setEditMeta() {
+    if (editFrameIndex) editFrameIndex.textContent = lockedFrameIndex >= 0 ? String(lockedFrameIndex) : '-';
+    if (editTimestampMs) editTimestampMs.textContent = String(Math.max(0, Math.round(lockedTimestampMs)));
+    if (editFrameHash) editFrameHash.textContent = shortHash(lastFrameHash);
   }
 
   function getParentMemoryApi() {
@@ -301,6 +349,10 @@
         videoEmpty.classList.remove('hidden');
       }
       previewCount = 0;
+      selectedVideoItemId = '';
+      selectedVideoUrl = '';
+      if (enterEditBtn) enterEditBtn.disabled = true;
+      closeEditPanel();
     }
     if (durationValue) {
       durationValue.textContent = '耗时 -';
@@ -337,8 +389,14 @@
     downloadBtn.textContent = '下载';
     downloadBtn.disabled = true;
 
+    const editBtn = document.createElement('button');
+    editBtn.className = 'geist-button-outline text-xs px-3 video-edit';
+    editBtn.type = 'button';
+    editBtn.textContent = '编辑';
+
     actions.appendChild(openBtn);
     actions.appendChild(downloadBtn);
+    actions.appendChild(editBtn);
     header.appendChild(title);
     header.appendChild(actions);
 
@@ -515,6 +573,94 @@
     return authHeader;
   }
 
+  function getFfmpegApis() {
+    const ffmpegApi = window.FFmpegWASM || {};
+    const utilApi = window.FFmpegUtil || {};
+    const FFmpegCtor = ffmpegApi.FFmpeg || ffmpegApi.createFFmpeg || null;
+    const fetchFile = utilApi.fetchFile || null;
+    return { FFmpegCtor, fetchFile };
+  }
+
+  async function ensureFfmpeg() {
+    if (ffmpegLoaded && ffmpegInstance) return ffmpegInstance;
+    if (ffmpegLoading) {
+      for (let i = 0; i < 80; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        if (ffmpegLoaded && ffmpegInstance) return ffmpegInstance;
+      }
+      throw new Error('ffmpeg_load_timeout');
+    }
+    const { FFmpegCtor } = getFfmpegApis();
+    if (!FFmpegCtor) {
+      throw new Error('ffmpeg_runtime_missing');
+    }
+    ffmpegLoading = true;
+    try {
+      if (typeof FFmpegCtor === 'function' && FFmpegCtor.prototype && FFmpegCtor.prototype.load) {
+        ffmpegInstance = new FFmpegCtor();
+        await ffmpegInstance.load();
+      } else if (typeof FFmpegCtor === 'function') {
+        ffmpegInstance = FFmpegCtor({ log: false });
+        if (ffmpegInstance && typeof ffmpegInstance.load === 'function') {
+          await ffmpegInstance.load();
+        }
+      }
+      if (!ffmpegInstance) {
+        throw new Error('ffmpeg_instance_init_failed');
+      }
+      ffmpegLoaded = true;
+      return ffmpegInstance;
+    } finally {
+      ffmpegLoading = false;
+    }
+  }
+
+  async function sha256Hex(bytes) {
+    const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function fetchArrayBuffer(url) {
+    const resp = await fetch(url, { mode: 'cors' });
+    if (!resp.ok) {
+      throw new Error(`fetch_failed_${resp.status}`);
+    }
+    return await resp.arrayBuffer();
+  }
+
+  async function ffmpegWriteFile(ff, name, data) {
+    if (typeof ff.writeFile === 'function') {
+      return await ff.writeFile(name, new Uint8Array(data));
+    }
+    if (ff.FS) {
+      ff.FS('writeFile', name, new Uint8Array(data));
+      return;
+    }
+    throw new Error('ffmpeg_writefile_unsupported');
+  }
+
+  async function ffmpegReadFile(ff, name) {
+    if (typeof ff.readFile === 'function') {
+      const out = await ff.readFile(name);
+      return out instanceof Uint8Array ? out : new Uint8Array(out);
+    }
+    if (ff.FS) {
+      const out = ff.FS('readFile', name);
+      return out instanceof Uint8Array ? out : new Uint8Array(out);
+    }
+    throw new Error('ffmpeg_readfile_unsupported');
+  }
+
+  async function ffmpegExec(ff, args) {
+    if (typeof ff.exec === 'function') {
+      return await ff.exec(args);
+    }
+    if (typeof ff.run === 'function') {
+      return await ff.run(...args);
+    }
+    throw new Error('ffmpeg_exec_unsupported');
+  }
+
   function buildSseUrl(taskId, rawPublicKey) {
     const httpProtocol = window.location.protocol === 'https:' ? 'https' : 'http';
     const base = `${httpProtocol}://${window.location.host}/v1/public/video/sse`;
@@ -662,6 +808,76 @@
     if (!body) return;
     body.innerHTML = `\n      <video controls preload="metadata">\n        <source src="${safeUrl}" type="video/mp4">\n      </video>\n    `;
     updateItemLinks(container, safeUrl);
+  }
+
+  function getSelectedVideoItem() {
+    if (!selectedVideoItemId || !videoStage) return null;
+    return videoStage.querySelector(`.video-item[data-index="${selectedVideoItemId}"]`);
+  }
+
+  function refreshVideoSelectionUi() {
+    if (!videoStage) return;
+    const items = videoStage.querySelectorAll('.video-item');
+    items.forEach((item) => {
+      const isSelected = item.dataset.index === selectedVideoItemId;
+      item.classList.toggle('is-selected', isSelected);
+    });
+  }
+
+  function bindEditVideoSource(url) {
+    const safeUrl = String(url || '').trim();
+    selectedVideoUrl = safeUrl;
+    if (!editVideo) return;
+    editVideo.src = safeUrl;
+    editVideo.load();
+    lockedFrameIndex = -1;
+    lockedTimestampMs = 0;
+    lastFrameHash = '';
+    setEditMeta();
+  }
+
+  function openEditPanel() {
+    if (!editPanel || !editHint || !editBody) return;
+    const item = getSelectedVideoItem();
+    const url = item ? String(item.dataset.url || '').trim() : '';
+    if (!item || !url) {
+      editPanel.classList.remove('hidden');
+      editHint.classList.remove('hidden');
+      editBody.classList.add('hidden');
+      toast('请先选中一个已生成视频', 'warning');
+      return;
+    }
+    editPanel.classList.remove('hidden');
+    editHint.classList.add('hidden');
+    editBody.classList.remove('hidden');
+    bindEditVideoSource(url);
+  }
+
+  function closeEditPanel() {
+    if (!editPanel || !editHint || !editBody) return;
+    editHint.classList.remove('hidden');
+    editBody.classList.add('hidden');
+    editPanel.classList.add('hidden');
+  }
+
+  function updateTimelineByVideoTime() {
+    if (!editVideo || !editTimeline) return;
+    const duration = Number(editVideo.duration || 0);
+    if (!duration || !Number.isFinite(duration)) return;
+    const current = Number(editVideo.currentTime || 0);
+    const ratio = Math.max(0, Math.min(1, current / duration));
+    editTimeline.value = String(Math.round(ratio * EDIT_TIMELINE_MAX));
+    lockedTimestampMs = Math.round(current * 1000);
+    if (editTimeText) editTimeText.textContent = formatMs(lockedTimestampMs);
+  }
+
+  function lockFrameByCurrentTime() {
+    if (!editVideo) return;
+    const currentTime = Number(editVideo.currentTime || 0);
+    lockedTimestampMs = Math.round(currentTime * 1000);
+    const approxFps = 30;
+    lockedFrameIndex = Math.max(0, Math.round(currentTime * approxFps));
+    setEditMeta();
   }
 
   function updateAggregateProgress() {
@@ -904,6 +1120,215 @@
     setStatus('', '未连接');
   }
 
+  async function createEditVideoTask(authHeader, frameDataUrl, editPrompt, editCtx) {
+    const res = await fetch('/v1/public/video/start', {
+      method: 'POST',
+      headers: {
+        ...buildAuthHeaders(authHeader),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        prompt: editPrompt,
+        image_url: frameDataUrl,
+        parent_post_id: null,
+        source_image_url: null,
+        reasoning_effort: DEFAULT_REASONING_EFFORT,
+        aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
+        video_length: editLengthSelect ? parseInt(editLengthSelect.value, 10) : 6,
+        resolution_name: resolutionSelect ? resolutionSelect.value : '480p',
+        preset: presetSelect ? presetSelect.value : 'custom',
+        concurrent: 1,
+        edit_context: editCtx
+      })
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || 'create_edit_task_failed');
+    }
+    const data = await res.json();
+    const taskId = String((data && data.task_id) || '').trim();
+    if (!taskId) throw new Error('edit_task_id_missing');
+    return taskId;
+  }
+
+  async function waitEditVideoResult(taskId, rawPublicKey) {
+    return await new Promise((resolve, reject) => {
+      const url = buildSseUrl(taskId, rawPublicKey);
+      const es = new EventSource(url);
+      let buffer = '';
+      let done = false;
+
+      const closeSafe = () => {
+        try { es.close(); } catch (e) { /* ignore */ }
+      };
+
+      es.onmessage = (event) => {
+        if (!event || !event.data) return;
+        if (event.data === '[DONE]') {
+          if (done) return;
+          const info = extractVideoInfo(buffer);
+          closeSafe();
+          if (info && info.url) {
+            done = true;
+            resolve(info.url);
+            return;
+          }
+          done = true;
+          reject(new Error('edit_video_url_missing'));
+          return;
+        }
+        let payload = null;
+        try {
+          payload = JSON.parse(event.data);
+        } catch (e) {
+          return;
+        }
+        if (payload && payload.error) {
+          closeSafe();
+          done = true;
+          reject(new Error(String(payload.error || 'edit_video_failed')));
+          return;
+        }
+        const choice = payload.choices && payload.choices[0];
+        const delta = choice && choice.delta ? choice.delta : null;
+        if (delta && delta.content) {
+          buffer += String(delta.content);
+          const info = extractVideoInfo(buffer);
+          if (info && info.url) {
+            closeSafe();
+            done = true;
+            resolve(info.url);
+          }
+        }
+      };
+      es.onerror = () => {
+        if (done) return;
+        closeSafe();
+        done = true;
+        reject(new Error('edit_sse_error'));
+      };
+    });
+  }
+
+  async function extractFrameAtCurrentPoint(videoUrl) {
+    const ff = await ensureFfmpeg();
+    const srcBuffer = await fetchArrayBuffer(videoUrl);
+    await ffmpegWriteFile(ff, 'edit_input.mp4', srcBuffer);
+    const seconds = (Math.max(0, lockedTimestampMs) / 1000).toFixed(3);
+    await ffmpegExec(ff, ['-y', '-ss', seconds, '-i', 'edit_input.mp4', '-frames:v', '1', 'edit_frame.png']);
+    const frameBytes = await ffmpegReadFile(ff, 'edit_frame.png');
+    const frameHash = await sha256Hex(frameBytes);
+    const sourceHash = await sha256Hex(srcBuffer);
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < frameBytes.length; i += chunk) {
+      binary += String.fromCharCode(...frameBytes.subarray(i, i + chunk));
+    }
+    const dataUrl = `data:image/png;base64,${btoa(binary)}`;
+    lastFrameHash = frameHash;
+    setEditMeta();
+    return {
+      dataUrl,
+      frameHash,
+      sourceHash,
+      sourceBuffer: srcBuffer,
+    };
+  }
+
+  async function concatVideosLocal(sourceBuffer, generatedVideoUrl) {
+    const ff = await ensureFfmpeg();
+    const generatedBuffer = await fetchArrayBuffer(generatedVideoUrl);
+    await ffmpegWriteFile(ff, 'seg_a_source.mp4', sourceBuffer);
+    await ffmpegWriteFile(ff, 'seg_b_source.mp4', generatedBuffer);
+    const trimSeconds = (Math.max(0, lockedTimestampMs) / 1000).toFixed(3);
+    if (Number(trimSeconds) > 0) {
+      await ffmpegExec(
+        ff,
+        ['-y', '-i', 'seg_a_source.mp4', '-t', trimSeconds, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', 'seg_a.mp4']
+      );
+      await ffmpegExec(
+        ff,
+        ['-y', '-i', 'seg_b_source.mp4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', 'seg_b.mp4']
+      );
+      await ffmpegWriteFile(
+        ff,
+        'concat_list.txt',
+        new TextEncoder().encode("file 'seg_a.mp4'\nfile 'seg_b.mp4'\n")
+      );
+      await ffmpegExec(
+        ff,
+        ['-y', '-f', 'concat', '-safe', '0', '-i', 'concat_list.txt', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', 'merged.mp4']
+      );
+    } else {
+      await ffmpegExec(
+        ff,
+        ['-y', '-i', 'seg_b_source.mp4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', 'merged.mp4']
+      );
+    }
+    const merged = await ffmpegReadFile(ff, 'merged.mp4');
+    return new Blob([merged], { type: 'video/mp4' });
+  }
+
+  async function runSplice() {
+    if (editingBusy) {
+      toast('拼接任务进行中', 'warning');
+      return;
+    }
+    if (!selectedVideoUrl) {
+      toast('请先选中视频并进入编辑模式', 'error');
+      return;
+    }
+    const authHeader = await ensurePublicKey();
+    if (authHeader === null) {
+      toast('请先配置 Public Key', 'error');
+      window.location.href = '/login';
+      return;
+    }
+    const prompt = String(editPromptInput ? editPromptInput.value : '').trim();
+    if (!prompt) {
+      toast('请输入拼接提示词', 'warning');
+      return;
+    }
+    if (!('crypto' in window) || !crypto.subtle) {
+      toast('当前浏览器不支持拼接所需的加密能力', 'error');
+      return;
+    }
+    editingBusy = true;
+    if (spliceBtn) spliceBtn.disabled = true;
+    setStatus('connecting', '截帧与拼接处理中');
+    try {
+      const frameInfo = await extractFrameAtCurrentPoint(selectedVideoUrl);
+      const editCtx = {
+        source_video_url: selectedVideoUrl,
+        source_video_sha256: frameInfo.sourceHash,
+        splice_at_ms: Math.round(lockedTimestampMs),
+        frame_index: Math.max(0, lockedFrameIndex),
+        frame_hash_sha256: frameInfo.frameHash,
+        edit_session_id: selectedVideoItemId || 'video-edit',
+        round: editingRound + 1
+      };
+      const taskId = await createEditVideoTask(authHeader, frameInfo.dataUrl, prompt, editCtx);
+      const generatedVideoUrl = await waitEditVideoResult(taskId, normalizeAuthHeader(authHeader));
+      const mergedBlob = await concatVideosLocal(frameInfo.sourceBuffer, generatedVideoUrl);
+      const mergedUrl = URL.createObjectURL(mergedBlob);
+      const item = getSelectedVideoItem();
+      if (item) {
+        const state = { previewItem: item };
+        renderVideoFromUrl(state, mergedUrl);
+        bindEditVideoSource(mergedUrl);
+      }
+      editingRound += 1;
+      setStatus('connected', `拼接完成（第 ${editingRound} 轮）`);
+      toast('拼接完成，可继续下一轮编辑', 'success');
+    } catch (e) {
+      setStatus('error', '拼接失败');
+      toast(`拼接失败: ${String(e && e.message ? e.message : e)}`, 'error');
+    } finally {
+      editingBusy = false;
+      if (spliceBtn) spliceBtn.disabled = false;
+    }
+  }
+
   function finishRun(hasError) {
     if (!isRunning) return;
     closeAllSources();
@@ -943,14 +1368,87 @@
     });
   }
 
+  if (enterEditBtn) {
+    enterEditBtn.disabled = true;
+    enterEditBtn.addEventListener('click', () => {
+      openEditPanel();
+    });
+  }
+
+  if (cancelEditBtn) {
+    cancelEditBtn.addEventListener('click', () => {
+      closeEditPanel();
+    });
+  }
+
+  if (editTimeline) {
+    editTimeline.addEventListener('input', () => {
+      if (!editVideo) return;
+      const duration = Number(editVideo.duration || 0);
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      const ratio = Number(editTimeline.value || 0) / EDIT_TIMELINE_MAX;
+      const nextTime = Math.max(0, Math.min(duration, duration * ratio));
+      editVideo.currentTime = nextTime;
+      lockedTimestampMs = Math.round(nextTime * 1000);
+      if (editTimeText) editTimeText.textContent = formatMs(lockedTimestampMs);
+      lockFrameByCurrentTime();
+    });
+  }
+
+  if (editVideo) {
+    editVideo.addEventListener('loadedmetadata', () => {
+      const duration = Number(editVideo.duration || 0);
+      if (editDurationText) {
+        editDurationText.textContent = duration > 0
+          ? `总时长 ${formatMs(duration * 1000)}`
+          : '总时长 -';
+      }
+      lockedTimestampMs = 0;
+      lockedFrameIndex = 0;
+      lastFrameHash = '';
+      setEditMeta();
+      updateTimelineByVideoTime();
+    });
+    editVideo.addEventListener('timeupdate', () => {
+      updateTimelineByVideoTime();
+      lockFrameByCurrentTime();
+    });
+    editVideo.addEventListener('seeked', () => {
+      updateTimelineByVideoTime();
+      lockFrameByCurrentTime();
+    });
+  }
+
+  if (spliceBtn) {
+    spliceBtn.addEventListener('click', () => {
+      runSplice();
+    });
+  }
+
   if (videoStage) {
     videoStage.addEventListener('click', async (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
-      if (!target.classList.contains('video-download')) return;
-      event.preventDefault();
       const item = target.closest('.video-item');
       if (!item) return;
+      selectedVideoItemId = String(item.dataset.index || '');
+      selectedVideoUrl = String(item.dataset.url || '');
+      refreshVideoSelectionUi();
+      if (enterEditBtn) {
+        enterEditBtn.disabled = !selectedVideoUrl;
+      }
+      if (target.classList.contains('video-edit')) {
+        event.preventDefault();
+        openEditPanel();
+        return;
+      }
+      if (!target.classList.contains('video-download')) {
+        if (editPanel && !editPanel.classList.contains('hidden')) {
+          openEditPanel();
+        }
+        return;
+      }
+      event.preventDefault();
       const url = item.dataset.url || target.dataset.url || '';
       const index = item.dataset.index || '';
       if (!url) return;

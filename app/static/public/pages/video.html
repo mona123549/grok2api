@@ -18,7 +18,7 @@
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
   <script src="/static/common/js/theme.js?v=0.1.0"></script>
   <link href="/static/common/css/common.css?v=0.3.7" rel="stylesheet">
-  <link href="/static/public/css/video.css?v=0.3.5" rel="stylesheet">
+  <link href="/static/public/css/video.css?v=0.3.6" rel="stylesheet">
   <link href="/static/common/css/toast.css" rel="stylesheet">
 </head>
 
@@ -177,11 +177,54 @@
         <div class="video-preview-header">
           <div class="card-title">视频预览</div>
           <div class="preview-actions">
+            <button id="enterEditBtn" class="geist-button-outline text-xs px-3">进入编辑模式</button>
             <button id="clearBtn" class="geist-button-outline text-xs px-3">清空</button>
           </div>
         </div>
         <div id="videoEmpty" class="video-empty">等待生成视频</div>
         <div id="videoStage" class="video-stage hidden"></div>
+      </div>
+
+      <div id="editPanel" class="video-card edit-panel hidden">
+        <div class="video-preview-header">
+          <div class="card-title">拼接编辑</div>
+          <div class="preview-actions">
+            <button id="cancelEditBtn" class="geist-button-outline text-xs px-3">退出编辑</button>
+          </div>
+        </div>
+        <div id="editHint" class="video-empty">先在上方视频列表中选择一个视频，再进入编辑模式。</div>
+        <div id="editBody" class="hidden">
+          <div class="edit-preview-wrap">
+            <video id="editVideo" controls preload="metadata"></video>
+          </div>
+          <div class="edit-slider-wrap">
+            <input id="editTimeline" type="range" min="0" max="100000" step="1" value="0">
+            <div class="progress-meta">
+              <span id="editTimeText">00:00.000</span>
+              <span id="editDurationText">总时长 -</span>
+            </div>
+          </div>
+          <div class="meta-grid edit-meta-grid">
+            <div class="meta-item"><div class="meta-label">frame_index</div><div id="editFrameIndex" class="meta-value">-</div></div>
+            <div class="meta-item"><div class="meta-label">timestamp_ms</div><div id="editTimestampMs" class="meta-value">-</div></div>
+            <div class="meta-item"><div class="meta-label">frame_hash</div><div id="editFrameHash" class="meta-value">-</div></div>
+            <div class="meta-item">
+              <div class="meta-label">拼接时长</div>
+              <select id="editLengthSelect" class="geist-input">
+                <option value="6" selected>6 秒</option>
+                <option value="10">10 秒</option>
+                <option value="15">15 秒</option>
+              </select>
+            </div>
+          </div>
+          <div class="settings-block prompt-block edit-prompt-block">
+            <label class="field-label" for="editPromptInput">拼接提示词</label>
+            <textarea id="editPromptInput" class="geist-input video-textarea" placeholder="描述后续要拼接的画面内容"></textarea>
+          </div>
+          <div class="preview-actions">
+            <button id="spliceBtn" class="geist-button text-xs px-3">拼接视频</button>
+          </div>
+        </div>
       </div>
     </div>
   </main>
@@ -213,7 +256,9 @@
   <script src="/static/common/js/mobile-fab.js?v=0.1.1"></script>
   <script src="/static/common/js/toast.js"></script>
   <script src="/static/common/js/pwa.js?v=0.1.1"></script>
-  <script src="/static/public/js/video.js?v=0.3.6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+  <script src="/static/public/js/video.js?v=0.3.7"></script>
 </body>
 
 </html>
