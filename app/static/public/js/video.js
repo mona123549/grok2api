@@ -21,6 +21,10 @@
   const editLengthSelect = document.getElementById('editLengthSelect');
   const editPromptInput = document.getElementById('editPromptInput');
   const spliceBtn = document.getElementById('spliceBtn');
+  const pickMergeVideoBtn = document.getElementById('pickMergeVideoBtn');
+  const directMergeBtn = document.getElementById('directMergeBtn');
+  const mergeVideoA = document.getElementById('mergeVideoA');
+  const mergeVideoB = document.getElementById('mergeVideoB');
   const promptInput = document.getElementById('promptInput');
   const imageUrlInput = document.getElementById('imageUrlInput');
   const parentPostInput = document.getElementById('parentPostInput');
@@ -73,6 +77,9 @@
   let ffmpegLoading = false;
   const DEFAULT_REASONING_EFFORT = 'low';
   const EDIT_TIMELINE_MAX = 100000;
+  let mergeTargetVideoUrl = '';
+  let mergeTargetVideoName = '';
+  let cacheModalPickMode = 'edit';
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -100,6 +107,15 @@
     if (editFrameIndex) editFrameIndex.textContent = lockedFrameIndex >= 0 ? String(lockedFrameIndex) : '-';
     if (editTimestampMs) editTimestampMs.textContent = String(Math.max(0, Math.round(lockedTimestampMs)));
     if (editFrameHash) editFrameHash.textContent = shortHash(lastFrameHash);
+  }
+
+  function updateMergeLabels() {
+    if (mergeVideoA) {
+      mergeVideoA.textContent = selectedVideoUrl ? shortHash(selectedVideoUrl) : '-';
+    }
+    if (mergeVideoB) {
+      mergeVideoB.textContent = mergeTargetVideoName || (mergeTargetVideoUrl ? shortHash(mergeTargetVideoUrl) : '-');
+    }
   }
 
   function getParentMemoryApi() {
@@ -912,6 +928,7 @@
     lockedTimestampMs = 0;
     lastFrameHash = '';
     setEditMeta();
+    updateMergeLabels();
   }
 
   function openEditPanel() {
@@ -931,6 +948,7 @@
     editHint.classList.add('hidden');
     editBody.classList.remove('hidden');
     bindEditVideoSource(url);
+    updateMergeLabels();
   }
 
   function closeEditPanel() {
@@ -1014,6 +1032,14 @@
   function useCachedVideo(url, name) {
     const safeUrl = String(url || '').trim();
     if (!safeUrl) return;
+    if (cacheModalPickMode === 'merge_target') {
+      mergeTargetVideoUrl = safeUrl;
+      mergeTargetVideoName = String(name || '').trim();
+      updateMergeLabels();
+      closeCacheVideoModal();
+      toast('已选择拼接视频B', 'success');
+      return;
+    }
     selectedVideoItemId = `cache-${Date.now()}`;
     selectedVideoUrl = safeUrl;
     if (imageUrlInput) imageUrlInput.value = safeUrl;
@@ -1021,6 +1047,54 @@
     if (enterEditBtn) enterEditBtn.disabled = false;
     closeCacheVideoModal();
     openEditPanel();
+  }
+
+  async function directMergeTwoVideos() {
+    if (!selectedVideoUrl) {
+      toast('请先选中主视频A', 'warning');
+      return;
+    }
+    if (!mergeTargetVideoUrl) {
+      toast('请先选择拼接视频B', 'warning');
+      return;
+    }
+    if (editingBusy) {
+      toast('任务进行中', 'warning');
+      return;
+    }
+    editingBusy = true;
+    if (directMergeBtn) directMergeBtn.disabled = true;
+    setStatus('connecting', '本地拼接中');
+    try {
+      const ff = await ensureFfmpeg();
+      const a = await fetchArrayBuffer(selectedVideoUrl);
+      const b = await fetchArrayBuffer(mergeTargetVideoUrl);
+      await ffmpegWriteFile(ff, 'merge_a.mp4', a);
+      await ffmpegWriteFile(ff, 'merge_b.mp4', b);
+      await ffmpegExec(ff, ['-y', '-i', 'merge_a.mp4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', 'merge_a_norm.mp4']);
+      await ffmpegExec(ff, ['-y', '-i', 'merge_b.mp4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', 'merge_b_norm.mp4']);
+      await ffmpegWriteFile(ff, 'merge_list.txt', new TextEncoder().encode("file 'merge_a_norm.mp4'\nfile 'merge_b_norm.mp4'\n"));
+      await ffmpegExec(ff, ['-y', '-f', 'concat', '-safe', '0', '-i', 'merge_list.txt', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', 'merge_out.mp4']);
+      const out = await ffmpegReadFile(ff, 'merge_out.mp4');
+      const outBlob = new Blob([new Uint8Array(out)], { type: 'video/mp4' });
+      const outUrl = URL.createObjectURL(outBlob);
+      const item = getSelectedVideoItem();
+      if (item) {
+        renderVideoFromUrl({ previewItem: item }, outUrl);
+      }
+      bindEditVideoSource(outUrl);
+      mergeTargetVideoUrl = '';
+      mergeTargetVideoName = '';
+      updateMergeLabels();
+      setStatus('connected', '拼接完成');
+      toast('已完成两段视频拼接', 'success');
+    } catch (e) {
+      setStatus('error', '拼接失败');
+      toast(`拼接失败: ${String(e && e.message ? e.message : e)}`, 'error');
+    } finally {
+      editingBusy = false;
+      if (directMergeBtn) directMergeBtn.disabled = false;
+    }
   }
 
   function updateTimelineByVideoTime() {
@@ -1591,10 +1665,34 @@
       runSplice();
     });
   }
+  if (directMergeBtn) {
+    directMergeBtn.addEventListener('click', () => {
+      directMergeTwoVideos();
+    });
+  }
 
   if (pickCachedVideoBtn) {
     pickCachedVideoBtn.addEventListener('click', async () => {
       try {
+        cacheModalPickMode = 'edit';
+        openCacheVideoModal();
+        if (cacheVideoList) {
+          cacheVideoList.innerHTML = '<div class="video-empty">正在读取缓存视频...</div>';
+        }
+        const items = await loadCachedVideos();
+        renderCachedVideoList(items);
+      } catch (e) {
+        if (cacheVideoList) {
+          cacheVideoList.innerHTML = '<div class="video-empty">读取失败，请稍后重试</div>';
+        }
+        toast('读取缓存视频失败', 'error');
+      }
+    });
+  }
+  if (pickMergeVideoBtn) {
+    pickMergeVideoBtn.addEventListener('click', async () => {
+      try {
+        cacheModalPickMode = 'merge_target';
         openCacheVideoModal();
         if (cacheVideoList) {
           cacheVideoList.innerHTML = '<div class="video-empty">正在读取缓存视频...</div>';
@@ -1647,6 +1745,7 @@
       if (enterEditBtn) {
         enterEditBtn.disabled = !selectedVideoUrl;
       }
+      updateMergeLabels();
       if (target.classList.contains('video-edit')) {
         event.preventDefault();
         openEditPanel();

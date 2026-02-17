@@ -218,11 +218,23 @@
               </select>
             </div>
           </div>
+          <div class="meta-grid edit-meta-grid">
+            <div class="meta-item">
+              <div class="meta-label">主视频A</div>
+              <div id="mergeVideoA" class="meta-value">-</div>
+            </div>
+            <div class="meta-item">
+              <div class="meta-label">拼接视频B</div>
+              <div id="mergeVideoB" class="meta-value">-</div>
+            </div>
+          </div>
           <div class="settings-block prompt-block edit-prompt-block">
             <label class="field-label" for="editPromptInput">拼接提示词</label>
             <textarea id="editPromptInput" class="geist-input video-textarea" placeholder="描述后续要拼接的画面内容"></textarea>
           </div>
           <div class="preview-actions">
+            <button id="pickMergeVideoBtn" class="geist-button-outline text-xs px-3">选择视频B</button>
+            <button id="directMergeBtn" class="geist-button-outline text-xs px-3">直接拼接(跳过生成)</button>
             <button id="spliceBtn" class="geist-button text-xs px-3">拼接视频</button>
           </div>
         </div>
