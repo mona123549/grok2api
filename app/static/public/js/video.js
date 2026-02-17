@@ -122,6 +122,14 @@
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(milli).padStart(3, '0')}`;
   }
 
+  function enforceInlinePlayback(videoEl) {
+    if (!(videoEl instanceof HTMLVideoElement)) return;
+    videoEl.playsInline = true;
+    videoEl.setAttribute('playsinline', '');
+    videoEl.setAttribute('webkit-playsinline', '');
+    videoEl.setAttribute('x5-playsinline', 'true');
+  }
+
   function shortHash(value) {
     const raw = String(value || '');
     if (!raw) return '-';
@@ -1180,10 +1188,9 @@
     const videoEl = body.querySelector('video');
     let videoUrl = '';
     if (videoEl) {
+      enforceInlinePlayback(videoEl);
       videoEl.controls = true;
       videoEl.preload = 'metadata';
-      videoEl.setAttribute('playsinline', '');
-      videoEl.setAttribute('webkit-playsinline', '');
       const source = videoEl.querySelector('source');
       if (source && source.getAttribute('src')) {
         videoUrl = source.getAttribute('src');
@@ -1237,6 +1244,7 @@
       editHint.classList.toggle('hidden', Boolean(safeUrl));
     }
     if (!editVideo) return;
+    enforceInlinePlayback(editVideo);
     editVideo.src = safeUrl;
     editVideo.load();
     lockedFrameIndex = -1;
@@ -1257,6 +1265,7 @@
   function bindMergeVideoA(url) {
     const safeUrl = String(url || '').trim();
     if (!mergeVideoPreviewA) return;
+    enforceInlinePlayback(mergeVideoPreviewA);
     mergeVideoPreviewA.src = safeUrl;
     mergeVideoPreviewA.load();
     mergeCutMsA = 0;
@@ -1268,6 +1277,7 @@
   function bindMergeVideoB(url) {
     const safeUrl = String(url || '').trim();
     if (!mergeVideoPreviewB) return;
+    enforceInlinePlayback(mergeVideoPreviewB);
     mergeVideoPreviewB.src = safeUrl;
     mergeVideoPreviewB.load();
     mergeCutMsB = 0;
@@ -2541,6 +2551,7 @@
   }
 
   if (editVideo) {
+    enforceInlinePlayback(editVideo);
     editVideo.addEventListener('loadedmetadata', () => {
       const duration = Number(editVideo.duration || 0);
       if (editDurationText) {
@@ -2565,6 +2576,7 @@
   }
 
   if (mergeVideoPreviewA) {
+    enforceInlinePlayback(mergeVideoPreviewA);
     mergeVideoPreviewA.addEventListener('loadedmetadata', () => {
       const duration = Number(mergeVideoPreviewA.duration || 0);
       if (mergeDurationA) {
@@ -2578,6 +2590,7 @@
   }
 
   if (mergeVideoPreviewB) {
+    enforceInlinePlayback(mergeVideoPreviewB);
     mergeVideoPreviewB.addEventListener('loadedmetadata', () => {
       const duration = Number(mergeVideoPreviewB.duration || 0);
       if (mergeDurationB) {
