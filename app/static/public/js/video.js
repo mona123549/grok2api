@@ -150,6 +150,13 @@
     spliceBtn.innerHTML = `${iconSplice}<span>拼接视频</span>`;
   }
 
+  function setEditTimelineLock(locked) {
+    if (!editTimeline) return;
+    editTimeline.disabled = Boolean(locked);
+    editTimeline.style.pointerEvents = locked ? 'none' : '';
+    editTimeline.style.opacity = locked ? '0.6' : '';
+  }
+
   function updateHistoryCount() {
     if (!historyCount || !videoStage) return;
     const count = videoStage.querySelectorAll('.video-item').length;
@@ -2005,6 +2012,7 @@
       return;
     }
     editingBusy = true;
+    setEditTimelineLock(true);
     if (directMergeBtn) directMergeBtn.disabled = true;
     setStatus('connecting', '手动两段拼接处理中');
     try {
@@ -2027,6 +2035,7 @@
       toast(`手动拼接失败: ${String(e && e.message ? e.message : e)}`, 'error');
     } finally {
       editingBusy = false;
+      setEditTimelineLock(false);
       if (directMergeBtn) directMergeBtn.disabled = false;
     }
   }
@@ -2056,6 +2065,7 @@
       return;
     }
     editingBusy = true;
+    setEditTimelineLock(true);
     const spliceRun = {
       cancelled: false,
       cancelling: false,
@@ -2168,6 +2178,7 @@
         activeSpliceRun = null;
       }
       editingBusy = false;
+      setEditTimelineLock(false);
       setSpliceButtonState('idle');
     }
   }
