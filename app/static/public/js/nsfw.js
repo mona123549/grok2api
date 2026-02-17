@@ -73,6 +73,32 @@
     }
   }
 
+  function setLightboxKeyboardShift(px) {
+    if (!lightbox) return;
+    const safe = Math.max(0, Math.round(Number(px) || 0));
+    lightbox.style.setProperty('--keyboard-shift', `${safe}px`);
+  }
+
+  function updateLightboxKeyboardShift() {
+    if (!lightbox || !lightbox.classList.contains('active')) {
+      setLightboxKeyboardShift(0);
+      return;
+    }
+    const isMobile = window.matchMedia('(max-width: 768px)').matches;
+    if (!isMobile || document.activeElement !== lightboxEditInput) {
+      setLightboxKeyboardShift(0);
+      return;
+    }
+    const vv = window.visualViewport;
+    if (!vv) {
+      setLightboxKeyboardShift(0);
+      return;
+    }
+    const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    const shift = overlap > 0 ? Math.min(280, overlap + 12) : 0;
+    setLightboxKeyboardShift(shift);
+  }
+
   function shortId(value) {
     const raw = String(value || '');
     if (!raw) return '-';
@@ -693,11 +719,13 @@
     }
     updateLightbox(index);
     lightbox.classList.add('active');
+    updateLightboxKeyboardShift();
   }
 
   function closeLightboxView() {
     if (!lightbox) return;
     lightbox.classList.remove('active');
+    setLightboxKeyboardShift(0);
     state.lightboxIndex = -1;
     if (lightboxEditSend) {
       lightboxEditSend.textContent = '发送编辑';
@@ -1671,6 +1699,12 @@
     lightboxEditInput.addEventListener('click', (e) => {
       e.stopPropagation();
     });
+    lightboxEditInput.addEventListener('focus', () => {
+      setTimeout(updateLightboxKeyboardShift, 80);
+    });
+    lightboxEditInput.addEventListener('blur', () => {
+      setTimeout(updateLightboxKeyboardShift, 80);
+    });
     lightboxEditInput.addEventListener('keydown', async (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
@@ -1689,6 +1723,15 @@
       showNextLightboxImage();
     }
   });
+
+  window.addEventListener('resize', updateLightboxKeyboardShift);
+  window.addEventListener('orientationchange', () => {
+    setTimeout(updateLightboxKeyboardShift, 120);
+  });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', updateLightboxKeyboardShift);
+    window.visualViewport.addEventListener('scroll', updateLightboxKeyboardShift);
+  }
 
   window.addEventListener('beforeunload', () => {
     closeImageSource();

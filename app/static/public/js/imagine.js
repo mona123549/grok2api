@@ -22,6 +22,15 @@
   const lightbox = document.getElementById('lightbox');
   const lightboxImg = document.getElementById('lightboxImg');
   const closeLightbox = document.getElementById('closeLightbox');
+  const lightboxEditor = document.querySelector('.lightbox-editor');
+  const lightboxEditInput = document.getElementById('lightboxEditInput');
+  const lightboxEditSend = document.getElementById('lightboxEditSend');
+  const lightboxEditProgressWrap = document.getElementById('lightboxEditProgressWrap');
+  const lightboxEditProgressBar = document.getElementById('lightboxEditProgressBar');
+  const lightboxEditProgressText = document.getElementById('lightboxEditProgressText');
+  const lightboxHistoryCount = document.getElementById('lightboxHistoryCount');
+  const lightboxHistoryEmpty = document.getElementById('lightboxHistoryEmpty');
+  const lightboxHistoryList = document.getElementById('lightboxHistoryList');
 
   let wsConnections = [];
   let sseConnections = [];
@@ -41,7 +50,17 @@
   let selectedImages = new Set();
   let streamSequence = 0;
   const streamImageMap = new Map();
+  let editProgressTimer = null;
+  let editProgressHideTimer = null;
+  let editProgressValue = 0;
+  let editProgressStartedAt = 0;
+  let editDurationEstimateMs = 14000;
+  let wsPausedByEdit = false;
   let finalMinBytesDefault = 100000;
+  const lightboxHistoryByItem = new WeakMap();
+  if (lightboxEditSend) {
+    lightboxEditSend.disabled = true;
+  }
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -144,6 +163,32 @@
 
   function updateError(value) {}
 
+  function setLightboxKeyboardShift(px) {
+    if (!lightbox) return;
+    const safe = Math.max(0, Math.round(Number(px) || 0));
+    lightbox.style.setProperty('--keyboard-shift', `${safe}px`);
+  }
+
+  function updateLightboxKeyboardShift() {
+    if (!lightbox || !lightbox.classList.contains('active')) {
+      setLightboxKeyboardShift(0);
+      return;
+    }
+    const isMobile = window.matchMedia('(max-width: 768px)').matches;
+    if (!isMobile || document.activeElement !== lightboxEditInput) {
+      setLightboxKeyboardShift(0);
+      return;
+    }
+    const vv = window.visualViewport;
+    if (!vv) {
+      setLightboxKeyboardShift(0);
+      return;
+    }
+    const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    const shift = overlap > 0 ? Math.min(280, overlap + 12) : 0;
+    setLightboxKeyboardShift(shift);
+  }
+
   function isLikelyBase64(raw) {
     if (!raw) return false;
     if (raw.startsWith('data:')) return true;
@@ -159,6 +204,195 @@
     if (base64.startsWith('/9j/')) return 'image/jpeg';
     if (base64.startsWith('R0lGOD')) return 'image/gif';
     return 'image/jpeg';
+  }
+
+  function buildImaginePublicUrl(parentPostId) {
+    return `https://imagine-public.x.ai/imagine-public/images/${parentPostId}.jpg`;
+  }
+
+  function normalizeHttpSourceUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('data:')) return '';
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      return raw;
+    }
+    if (raw.startsWith('/')) {
+      return `${window.location.origin}${raw}`;
+    }
+    if (isLikelyBase64(raw)) {
+      return '';
+    }
+    return '';
+  }
+
+  function pickSourceImageUrl(candidates, parentPostId) {
+    const list = Array.isArray(candidates) ? candidates : [candidates];
+    for (const candidate of list) {
+      const normalized = normalizeHttpSourceUrl(candidate);
+      if (normalized) return normalized;
+    }
+    return parentPostId ? buildImaginePublicUrl(parentPostId) : '';
+  }
+
+  function getParentMemoryApi() {
+    return window.ParentPostMemory || null;
+  }
+
+  function rememberParentPost(entry) {
+    const api = getParentMemoryApi();
+    if (!api || !entry) return;
+    try {
+      api.remember(entry);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function resolveSourceImageByParentPostId(parentPostId, fallbackUrl) {
+    const fallback = pickSourceImageUrl([fallbackUrl], parentPostId);
+    const api = getParentMemoryApi();
+    if (!api) return fallback;
+    try {
+      const hit = api.getByParentPostId(parentPostId);
+      if (hit && hit.sourceImageUrl) {
+        return pickSourceImageUrl(
+          [hit.sourceImageUrl, hit.source_image_url, hit.imageUrl, hit.image_url, fallback],
+          parentPostId
+        );
+      }
+    } catch (e) {
+      // ignore
+    }
+    return fallback;
+  }
+
+  function toDisplayImageUrl(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return '';
+    if (text.startsWith('data:')) return text;
+    if (text.startsWith('http://') || text.startsWith('https://') || text.startsWith('/')) {
+      return text;
+    }
+    if (isLikelyBase64(text)) {
+      return `data:${inferMime(text)};base64,${text}`;
+    }
+    return text;
+  }
+
+  function extractParentPostId(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const direct = text.match(/^[0-9a-fA-F-]{32,36}$/);
+    if (direct) return direct[0];
+    const generated = text.match(/\/generated\/([0-9a-fA-F-]{32,36})(?:\/|$)/);
+    if (generated) return generated[1];
+    const imaginePublic = text.match(/\/imagine-public\/images\/([0-9a-fA-F-]{32,36})(?:\.jpg|\/|$)/);
+    if (imaginePublic) return imaginePublic[1];
+    const imagePath = text.match(/\/images\/([0-9a-fA-F-]{32,36})(?:\.jpg|\/|$)/);
+    if (imagePath) return imagePath[1];
+    const all = text.match(/([0-9a-fA-F-]{32,36})/g);
+    return all && all.length ? all[all.length - 1] : '';
+  }
+
+  function clearEditProgressTimer() {
+    if (editProgressTimer) {
+      clearInterval(editProgressTimer);
+      editProgressTimer = null;
+    }
+    if (editProgressHideTimer) {
+      clearTimeout(editProgressHideTimer);
+      editProgressHideTimer = null;
+    }
+  }
+
+  function setEditProgress(value, text) {
+    const safe = Math.max(0, Math.min(100, Math.round(value || 0)));
+    editProgressValue = safe;
+    if (lightboxEditProgressBar) {
+      lightboxEditProgressBar.style.width = `${safe}%`;
+    }
+    if (lightboxEditProgressText) {
+      lightboxEditProgressText.textContent = text || `编辑中 ${safe}%`;
+    }
+  }
+
+  function updateEditDurationEstimate(elapsedMs) {
+    const ms = Number(elapsedMs || 0);
+    if (!Number.isFinite(ms) || ms <= 0) return;
+    const clamped = Math.max(8000, Math.min(45000, ms));
+    // 指数平滑，逐步贴近真实耗时
+    editDurationEstimateMs = Math.round(editDurationEstimateMs * 0.7 + clamped * 0.3);
+  }
+
+  function calcEditProgress(elapsedMs) {
+    const estimate = Math.max(8000, editDurationEstimateMs);
+    const ratio = elapsedMs / estimate;
+    if (ratio <= 1) {
+      // 0~90：在预估时间内按平滑曲线推进
+      const eased = 1 - Math.pow(1 - ratio, 3);
+      return 4 + eased * 86;
+    }
+    // 超过预估时间后继续慢速推进到 98，避免“卡住”
+    const overflow = ratio - 1;
+    return 90 + 8 * (1 - Math.exp(-overflow * 1.2));
+  }
+
+  function showEditProgress() {
+    if (lightboxEditProgressWrap) {
+      lightboxEditProgressWrap.classList.add('active');
+      lightboxEditProgressWrap.classList.remove('is-success', 'is-error');
+    }
+    if (lightboxEditProgressText) {
+      lightboxEditProgressText.classList.add('active');
+    }
+    setEditProgress(4, '编辑中 4%');
+  }
+
+  function hideEditProgress() {
+    clearEditProgressTimer();
+    if (lightboxEditProgressWrap) {
+      lightboxEditProgressWrap.classList.remove('active', 'is-success', 'is-error');
+    }
+    if (lightboxEditProgressText) {
+      lightboxEditProgressText.classList.remove('active');
+      lightboxEditProgressText.textContent = '编辑中 0%';
+    }
+    if (lightboxEditProgressBar) {
+      lightboxEditProgressBar.style.width = '0%';
+    }
+    editProgressValue = 0;
+  }
+
+  function startEditProgress() {
+    clearEditProgressTimer();
+    showEditProgress();
+    editProgressStartedAt = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    editProgressTimer = setInterval(() => {
+      const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      const elapsed = Math.max(0, now - editProgressStartedAt);
+      const next = Math.min(98, calcEditProgress(elapsed));
+      // 保障视觉上持续前进，不倒退不突进
+      const smooth = Math.max(editProgressValue + 0.2, next);
+      const seconds = (elapsed / 1000).toFixed(1);
+      setEditProgress(smooth, `编辑中 ${Math.round(smooth)}% · ${seconds}s`);
+    }, 120);
+  }
+
+  function finishEditProgress(success, text) {
+    clearEditProgressTimer();
+    if (!lightboxEditProgressWrap) return;
+    lightboxEditProgressWrap.classList.add('active');
+    lightboxEditProgressWrap.classList.remove('is-success', 'is-error');
+    lightboxEditProgressWrap.classList.add(success ? 'is-success' : 'is-error');
+    if (lightboxEditProgressText) {
+      lightboxEditProgressText.classList.add('active');
+    }
+    setEditProgress(100, text || (success ? '编辑完成 100%' : '编辑失败'));
+    editProgressHideTimer = setTimeout(() => {
+      hideEditProgress();
+      editProgressHideTimer = null;
+    }, 900);
   }
 
   function estimateBase64Bytes(raw) {
@@ -235,6 +469,121 @@
     return tasks;
   }
 
+  async function requestImagineEdit(authHeader, prompt, parentPostId, sourceImageUrl) {
+    const res = await fetch('/v1/public/imagine/edit', {
+      method: 'POST',
+      headers: {
+        ...buildAuthHeaders(authHeader),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        prompt,
+        parent_post_id: parentPostId,
+        source_image_url: sourceImageUrl,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || 'edit_failed');
+    }
+    return await res.json();
+  }
+
+  async function requestImagineEditStream(authHeader, prompt, parentPostId, sourceImageUrl, onProgress) {
+    const res = await fetch('/v1/public/imagine/edit', {
+      method: 'POST',
+      headers: {
+        ...buildAuthHeaders(authHeader),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        prompt,
+        parent_post_id: parentPostId,
+        source_image_url: sourceImageUrl,
+        stream: true,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || 'edit_failed');
+    }
+
+    const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.includes('text/event-stream')) {
+      return await res.json();
+    }
+
+    const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+    if (!reader) {
+      throw new Error('stream_not_supported');
+    }
+
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let finalResult = null;
+    let finalError = '';
+
+    function handleChunk(chunkText) {
+      let eventName = 'message';
+      const dataLines = [];
+      const lines = String(chunkText || '').split('\n');
+      for (const lineRaw of lines) {
+        const line = lineRaw.trim();
+        if (!line) continue;
+        if (line.startsWith('event:')) {
+          eventName = line.slice(6).trim();
+          continue;
+        }
+        if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trim());
+        }
+      }
+      if (!dataLines.length) return;
+      let payload = null;
+      try {
+        payload = JSON.parse(dataLines.join('\n'));
+      } catch (e) {
+        return;
+      }
+      if (eventName === 'progress') {
+        if (onProgress && typeof onProgress === 'function') {
+          onProgress(payload || {});
+        }
+      } else if (eventName === 'result') {
+        finalResult = payload || {};
+      } else if (eventName === 'error') {
+        finalError = String((payload && payload.message) || 'edit_failed');
+      }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      while (true) {
+        const idx = buffer.indexOf('\n\n');
+        if (idx < 0) break;
+        const block = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        handleChunk(block);
+      }
+    }
+
+    if (buffer.trim()) {
+      handleChunk(buffer);
+      buffer = '';
+    }
+
+    if (finalError) {
+      throw new Error(finalError);
+    }
+    if (finalResult) {
+      return finalResult;
+    }
+    throw new Error('edit_stream_empty_result');
+  }
+
   async function stopImagineTasks(taskIds, authHeader) {
     if (!taskIds || taskIds.length === 0) return;
     try {
@@ -294,6 +643,246 @@
     document.body.removeChild(link);
   }
 
+  async function copyText(text) {
+    const value = String(text || '').trim();
+    if (!value) return false;
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', 'readonly');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    textarea.style.pointerEvents = 'none';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return copied;
+  }
+
+  function formatLightboxHistoryTime(ts) {
+    try {
+      return new Date(ts).toLocaleString('zh-CN', { hour12: false });
+    } catch (e) {
+      return '-';
+    }
+  }
+
+  function shortLightboxParentId(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '-';
+    if (raw.length <= 14) return raw;
+    return `${raw.slice(0, 7)}...${raw.slice(-7)}`;
+  }
+
+  function getLightboxHistory(item) {
+    if (!item) return [];
+    let list = lightboxHistoryByItem.get(item);
+    if (!list) {
+      list = [];
+      lightboxHistoryByItem.set(item, list);
+    }
+    if (!list.length) {
+      const baseImageUrl = String(item.dataset.imageUrl || '').trim();
+      const baseParent = String(item.dataset.parentPostId || '').trim();
+      const baseSource = String(item.dataset.sourceImageUrl || '').trim();
+      const basePrompt = String(item.dataset.prompt || '').trim();
+      if (baseImageUrl) {
+        list.push({
+          id: `init_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+          round: 0,
+          mode: 'initial',
+          prompt: basePrompt,
+          imageUrl: baseImageUrl,
+          parentPostId: baseParent,
+          sourceImageUrl: baseSource,
+          elapsedMs: 0,
+          createdAt: Date.now(),
+        });
+      }
+    }
+    return list;
+  }
+
+  function applyLightboxHistoryEntry(item, entry) {
+    if (!item || !entry) return;
+    const oldParent = String(item.dataset.parentPostId || '').trim();
+    if (oldParent && streamImageMap.get(oldParent) === item) {
+      streamImageMap.delete(oldParent);
+    }
+
+    const imageUrl = String(entry.imageUrl || '').trim();
+    const parentPostId = String(entry.parentPostId || '').trim();
+    const sourceImageUrl = String(entry.sourceImageUrl || '').trim();
+    const prompt = String(entry.prompt || '').trim();
+
+    const img = item.querySelector('img');
+    if (img && imageUrl) {
+      img.src = imageUrl;
+    }
+    if (imageUrl) {
+      item.dataset.imageUrl = imageUrl;
+    }
+    if (prompt) {
+      item.dataset.prompt = prompt;
+    }
+    if (parentPostId) {
+      item.dataset.parentPostId = parentPostId;
+      item.dataset.sourceImageUrl = pickSourceImageUrl(
+        [sourceImageUrl, imageUrl],
+        parentPostId
+      );
+      streamImageMap.set(parentPostId, item);
+      rememberParentPost({
+        parentPostId,
+        sourceImageUrl: item.dataset.sourceImageUrl,
+        imageUrl: imageUrl || item.dataset.imageUrl || '',
+        origin: 'imagine_edit_history_apply',
+      });
+    } else {
+      item.dataset.parentPostId = '';
+      item.dataset.sourceImageUrl = '';
+    }
+
+    const elapsed = Number(entry.elapsedMs || 0);
+    const metaRight = item.querySelector('.waterfall-meta span');
+    if (metaRight && elapsed > 0) {
+      metaRight.textContent = `${elapsed}ms`;
+    }
+  }
+
+  function renderLightboxHistory(item) {
+    if (!lightboxHistoryCount || !lightboxHistoryEmpty || !lightboxHistoryList) return;
+    lightboxHistoryList.innerHTML = '';
+    if (!item) {
+      lightboxHistoryCount.textContent = '0 条';
+      lightboxHistoryEmpty.classList.remove('hidden');
+      return;
+    }
+    const history = getLightboxHistory(item);
+    lightboxHistoryCount.textContent = `${history.length} 条`;
+    if (!history.length) {
+      lightboxHistoryEmpty.classList.remove('hidden');
+      return;
+    }
+    lightboxHistoryEmpty.classList.add('hidden');
+
+    history.forEach((entry) => {
+      const row = document.createElement('div');
+      row.className = 'lightbox-history-item';
+
+      const thumb = document.createElement('img');
+      thumb.className = 'lightbox-history-thumb';
+      thumb.src = String(entry.imageUrl || '').trim();
+      thumb.alt = `history-${entry.round}`;
+      thumb.loading = 'lazy';
+      thumb.decoding = 'async';
+
+      const main = document.createElement('div');
+      main.className = 'lightbox-history-main';
+
+      const line1 = document.createElement('div');
+      line1.className = 'lightbox-history-line';
+      line1.innerHTML = `<strong>#${entry.round}</strong> · ${formatLightboxHistoryTime(entry.createdAt)} · ${Number(entry.elapsedMs || 0)}ms`;
+
+      const line2 = document.createElement('div');
+      line2.className = 'lightbox-history-line';
+      line2.innerHTML = `mode=<strong>${entry.mode || 'edit'}</strong> · parentPostId=<strong>${shortLightboxParentId(entry.parentPostId)}</strong>`;
+
+      const prompt = document.createElement('div');
+      prompt.className = 'lightbox-history-prompt';
+      prompt.textContent = String(entry.prompt || '').trim() || '-';
+
+      const actions = document.createElement('div');
+      actions.className = 'lightbox-history-actions';
+
+      const applyBtn = document.createElement('button');
+      applyBtn.type = 'button';
+      applyBtn.className = 'lightbox-history-btn';
+      applyBtn.textContent = '设为当前';
+      applyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        applyLightboxHistoryEntry(item, entry);
+        updateLightbox(currentImageIndex);
+      });
+
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'lightbox-history-btn';
+      copyBtn.textContent = '复制ID';
+      copyBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const parentPostId = String(entry.parentPostId || '').trim();
+        if (!parentPostId) {
+          toast('当前记录没有 parentPostId', 'warning');
+          return;
+        }
+        try {
+          const copied = await copyText(parentPostId);
+          if (!copied) throw new Error('copy_failed');
+          toast('已复制 parentPostId', 'success');
+        } catch (err) {
+          toast('复制失败', 'error');
+        }
+      });
+
+      actions.appendChild(applyBtn);
+      actions.appendChild(copyBtn);
+      main.appendChild(line1);
+      main.appendChild(line2);
+      main.appendChild(prompt);
+      main.appendChild(actions);
+
+      row.appendChild(thumb);
+      row.appendChild(main);
+      lightboxHistoryList.appendChild(row);
+    });
+  }
+
+  function updateCopyIdButton(item) {
+    if (!item) return;
+    const metaBar = item.querySelector('.waterfall-meta');
+    if (!metaBar) return;
+    let btn = metaBar.querySelector('.copy-parent-id-btn');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'copy-parent-id-btn';
+      btn.textContent = '复制ID';
+      metaBar.appendChild(btn);
+    }
+    const parentPostId = String(item.dataset.parentPostId || '').trim();
+    if (parentPostId) {
+      btn.classList.remove('is-hidden');
+      btn.title = `复制 parentPostId: ${parentPostId}`;
+      btn.dataset.parentPostId = parentPostId;
+    } else {
+      btn.classList.add('is-hidden');
+      btn.removeAttribute('title');
+      btn.dataset.parentPostId = '';
+    }
+  }
+
+  async function copyParentPostIdFromItem(item) {
+    const parentPostId = item ? String(item.dataset.parentPostId || '').trim() : '';
+    if (!parentPostId) {
+      toast('当前图片暂无 parentPostId', 'warning');
+      return;
+    }
+    try {
+      const copied = await copyText(parentPostId);
+      if (!copied) {
+        throw new Error('复制失败');
+      }
+      toast(`已复制 parentPostId：${parentPostId}`, 'success');
+    } catch (e) {
+      toast('复制 parentPostId 失败', 'error');
+    }
+  }
+
   function appendImage(base64, meta) {
     if (!waterfall) return;
     if (autoFilterToggle && autoFilterToggle.checked) {
@@ -342,6 +931,23 @@
     const prompt = (meta && meta.prompt) ? String(meta.prompt) : (promptInput ? promptInput.value.trim() : '');
     item.dataset.imageUrl = dataUrl;
     item.dataset.prompt = prompt || 'image';
+    const parentPostId = String(
+      (meta && (meta.image_id || meta.imageId || meta.parent_post_id || meta.parentPostId)) || ''
+    ).trim();
+    if (parentPostId) {
+      item.dataset.parentPostId = parentPostId;
+      item.dataset.sourceImageUrl = pickSourceImageUrl(
+        [meta && (meta.current_source_image_url || meta.source_image_url || meta.sourceImageUrl || meta.url || meta.image), dataUrl],
+        parentPostId
+      );
+      rememberParentPost({
+        parentPostId,
+        sourceImageUrl: item.dataset.sourceImageUrl,
+        imageUrl: dataUrl,
+        origin: 'imagine_ws',
+      });
+    }
+    updateCopyIdButton(item);
     if (isSelectionMode) {
       item.classList.add('selection-mode');
     }
@@ -448,6 +1054,20 @@
       const prompt = (meta && meta.prompt) ? String(meta.prompt) : (promptInput ? promptInput.value.trim() : '');
       item.dataset.imageUrl = dataUrl;
       item.dataset.prompt = prompt || 'image';
+      if (imageId) {
+        item.dataset.parentPostId = imageId;
+        item.dataset.sourceImageUrl = pickSourceImageUrl(
+          [meta && (meta.current_source_image_url || meta.source_image_url || meta.sourceImageUrl || meta.url || meta.image), dataUrl],
+          imageId
+        );
+        rememberParentPost({
+          parentPostId: imageId,
+          sourceImageUrl: item.dataset.sourceImageUrl,
+          imageUrl: dataUrl,
+          origin: 'imagine_ws',
+        });
+      }
+      updateCopyIdButton(item);
 
       if (isSelectionMode) {
         item.classList.add('selection-mode');
@@ -471,6 +1091,20 @@
         img.src = dataUrl;
       }
       item.dataset.imageUrl = dataUrl;
+      if (imageId) {
+        item.dataset.parentPostId = imageId;
+        item.dataset.sourceImageUrl = pickSourceImageUrl(
+          [meta && (meta.current_source_image_url || meta.source_image_url || meta.sourceImageUrl || meta.url || meta.image), dataUrl],
+          imageId
+        );
+        rememberParentPost({
+          parentPostId: imageId,
+          sourceImageUrl: item.dataset.sourceImageUrl,
+          imageUrl: dataUrl,
+          origin: 'imagine_ws',
+        });
+      }
+      updateCopyIdButton(item);
       const right = item.querySelector('.waterfall-meta span');
       if (right && meta && meta.elapsed_ms) {
         right.textContent = `${meta.elapsed_ms}ms`;
@@ -567,8 +1201,35 @@
       }
     });
     sseConnections = [];
+    wsPausedByEdit = false;
     updateActive();
     updateModeValue();
+  }
+
+  function pauseWsForEdit() {
+    if (wsPausedByEdit) return;
+    if (!isRunning || connectionMode !== 'ws') return;
+    const opened = wsConnections.filter(ws => ws && ws.readyState === WebSocket.OPEN);
+    if (opened.length === 0) return;
+    opened.forEach(ws => {
+      try {
+        ws.send(JSON.stringify({ type: 'stop' }));
+      } catch (e) {
+        // ignore
+      }
+    });
+    wsPausedByEdit = true;
+    setStatus('', '编辑中（WS已暂停）');
+  }
+
+  function resumeWsAfterEdit() {
+    if (!wsPausedByEdit) return;
+    wsPausedByEdit = false;
+    if (!isRunning || connectionMode !== 'ws') return;
+    const opened = wsConnections.filter(ws => ws && ws.readyState === WebSocket.OPEN);
+    if (opened.length === 0) return;
+    opened.forEach(ws => sendStart(null, ws));
+    setStatus('connected', '生成中');
   }
 
   function normalizeAuthHeader(authHeader) {
@@ -789,6 +1450,7 @@
     stopAllConnections();
     currentTaskIds = [];
     isRunning = false;
+    wsPausedByEdit = false;
     updateActive();
     updateModeValue();
     setButtons(false);
@@ -1118,6 +1780,12 @@
     waterfall.addEventListener('click', (e) => {
       const item = e.target.closest('.waterfall-item');
       if (!item) return;
+      if (e.target.closest('.copy-parent-id-btn')) {
+        e.preventDefault();
+        e.stopPropagation();
+        copyParentPostIdFromItem(item);
+        return;
+      }
       
       if (isSelectionMode) {
         // In selection mode, clicking anywhere on the item toggles selection
@@ -1131,7 +1799,9 @@
           
           if (index !== -1) {
             updateLightbox(index);
+            pauseWsForEdit();
             lightbox.classList.add('active');
+            updateLightboxKeyboardShift();
           }
         }
       }
@@ -1146,6 +1816,12 @@
   function getAllImages() {
     return Array.from(document.querySelectorAll('.waterfall-item img'));
   }
+
+  function getItemByImageIndex(index) {
+    const images = getAllImages();
+    if (index < 0 || index >= images.length) return null;
+    return images[index].closest('.waterfall-item');
+  }
   
   function updateLightbox(index) {
     const images = getAllImages();
@@ -1153,6 +1829,19 @@
     
     currentImageIndex = index;
     lightboxImg.src = images[index].src;
+    const item = getItemByImageIndex(index);
+    renderLightboxHistory(item);
+    if (lightboxEditSend) {
+      const parentPostId = item ? String(item.dataset.parentPostId || '').trim() : '';
+      lightboxEditSend.disabled = !parentPostId;
+      lightboxEditSend.title = parentPostId ? '使用 parentPostId 发起编辑' : '当前图片缺少 parentPostId，无法编辑';
+      if (lightboxEditInput && !lightboxEditInput.value.trim()) {
+        const seedPrompt = item ? String(item.dataset.prompt || '').trim() : '';
+        if (seedPrompt) {
+          lightboxEditInput.value = `基于此图编辑：${seedPrompt}`;
+        }
+      }
+    }
     
     // Update navigation buttons state
     if (lightboxPrev) lightboxPrev.disabled = (index === 0);
@@ -1171,22 +1860,220 @@
       updateLightbox(currentImageIndex + 1);
     }
   }
+
+  async function startEditFromLightbox() {
+    const item = getItemByImageIndex(currentImageIndex);
+    if (!item) {
+      toast('未找到当前图片', 'error');
+      return;
+    }
+    const parentPostId = String(item.dataset.parentPostId || '').trim();
+    if (!parentPostId) {
+      toast('当前图片缺少 parentPostId，无法进入编辑模式', 'warning');
+      return;
+    }
+
+    const finalPrompt = String(lightboxEditInput ? lightboxEditInput.value : '').trim();
+    if (!finalPrompt) {
+      toast('编辑提示词不能为空', 'warning');
+      if (lightboxEditInput) {
+        lightboxEditInput.focus();
+      }
+      return;
+    }
+
+    const authHeader = await ensurePublicKey();
+    if (authHeader === null) {
+      toast('请先配置 Public Key', 'error');
+      window.location.href = '/login';
+      return;
+    }
+
+    const sourceImageUrl = resolveSourceImageByParentPostId(
+      parentPostId,
+      String(item.dataset.sourceImageUrl || '').trim()
+    );
+    if (lightboxEditSend) {
+      lightboxEditSend.disabled = true;
+      lightboxEditSend.textContent = '编辑中...';
+    }
+    if (lightboxEditInput) {
+      lightboxEditInput.disabled = true;
+    }
+    showEditProgress();
+    setEditProgress(4, '已接收编辑请求');
+    try {
+      const data = await requestImagineEditStream(
+        authHeader,
+        finalPrompt,
+        parentPostId,
+        sourceImageUrl,
+        (evt) => {
+          const next = Number(evt && evt.progress ? evt.progress : 0);
+          const text = String((evt && evt.message) || '').trim();
+          if (Number.isFinite(next) && next > 0) {
+            const safe = Math.max(editProgressValue, Math.min(99, next));
+            setEditProgress(safe, text || `编辑中 ${safe}%`);
+          } else if (text) {
+            setEditProgress(editProgressValue, text);
+          }
+        }
+      );
+      const list = (data && Array.isArray(data.data)) ? data.data : [];
+      const first = list.length ? list[0] : null;
+      const output = first ? (first.url || first.b64_json || first.image || '') : '';
+      if (!output) {
+        throw new Error('编辑结果为空');
+      }
+      const generatedParent = extractParentPostId(data && data.current_parent_post_id)
+        || extractParentPostId(data && data.generated_parent_post_id)
+        || extractParentPostId(output)
+        || `edit-${Date.now()}`;
+      const nextSourceImageUrl = pickSourceImageUrl(
+        [
+          data && data.current_source_image_url,
+          data && data.source_image_url,
+          output,
+          item.dataset.sourceImageUrl,
+        ],
+        generatedParent
+      );
+      const displayUrl = toDisplayImageUrl(output);
+      if (!displayUrl) {
+        throw new Error('编辑结果格式无效');
+      }
+      const oldParent = String(item.dataset.parentPostId || '').trim();
+      if (oldParent && streamImageMap.get(oldParent) === item) {
+        streamImageMap.delete(oldParent);
+      }
+      const img = item.querySelector('img');
+      if (img) {
+        img.src = displayUrl;
+      }
+      item.dataset.imageUrl = displayUrl;
+      item.dataset.prompt = finalPrompt;
+      item.dataset.parentPostId = generatedParent;
+      item.dataset.sourceImageUrl = nextSourceImageUrl;
+      rememberParentPost({
+        parentPostId: generatedParent,
+        sourceImageUrl: nextSourceImageUrl,
+        imageUrl: displayUrl,
+        origin: 'imagine_edit',
+      });
+      streamImageMap.set(generatedParent, item);
+      const elapsed = data && data.elapsed_ms ? Number(data.elapsed_ms) : 0;
+      updateEditDurationEstimate(elapsed);
+      const metaRight = item.querySelector('.waterfall-meta span');
+      if (metaRight && elapsed > 0) {
+        metaRight.textContent = `${elapsed}ms`;
+      }
+      const history = getLightboxHistory(item);
+      const maxRound = history.reduce((max, it) => Math.max(max, Number(it && it.round ? it.round : 0)), 0);
+      history.unshift({
+        id: `edit_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+        round: maxRound + 1,
+        mode: 'edit',
+        prompt: finalPrompt,
+        imageUrl: displayUrl,
+        parentPostId: generatedParent,
+        sourceImageUrl: nextSourceImageUrl,
+        elapsedMs: Number.isFinite(elapsed) ? Math.max(0, Math.round(elapsed)) : 0,
+        createdAt: Date.now(),
+      });
+      lightboxImg.src = displayUrl;
+      renderLightboxHistory(item);
+      finishEditProgress(true, '编辑完成 100%');
+      toast('编辑完成，已替换当前图片', 'success');
+      if (lightboxEditInput) {
+        lightboxEditInput.value = '';
+      }
+    } catch (e) {
+      const msg = String(e && e.message ? e.message : e);
+      finishEditProgress(false, '编辑失败');
+      toast(`编辑失败：${msg}`, 'error');
+    } finally {
+      if (lightboxEditSend) {
+        lightboxEditSend.textContent = '发送编辑';
+        const currentItem = getItemByImageIndex(currentImageIndex);
+        const currentParent = currentItem ? String(currentItem.dataset.parentPostId || '').trim() : '';
+        lightboxEditSend.disabled = !currentParent;
+      }
+      if (lightboxEditInput) {
+        lightboxEditInput.disabled = false;
+      }
+    }
+  }
   
   if (lightbox && closeLightbox) {
     closeLightbox.addEventListener('click', (e) => {
       e.stopPropagation();
       lightbox.classList.remove('active');
+      setLightboxKeyboardShift(0);
       currentImageIndex = -1;
+      if (lightboxEditSend) {
+        lightboxEditSend.textContent = '发送编辑';
+        lightboxEditSend.disabled = true;
+      }
+      if (lightboxEditInput) {
+        lightboxEditInput.value = '';
+        lightboxEditInput.disabled = false;
+      }
+      hideEditProgress();
+      renderLightboxHistory(null);
+      resumeWsAfterEdit();
     });
 
     lightbox.addEventListener('click', () => {
       lightbox.classList.remove('active');
+      setLightboxKeyboardShift(0);
       currentImageIndex = -1;
+      if (lightboxEditSend) {
+        lightboxEditSend.textContent = '发送编辑';
+        lightboxEditSend.disabled = true;
+      }
+      if (lightboxEditInput) {
+        lightboxEditInput.value = '';
+        lightboxEditInput.disabled = false;
+      }
+      hideEditProgress();
+      renderLightboxHistory(null);
+      resumeWsAfterEdit();
     });
 
     // Prevent closing when clicking on the image
     if (lightboxImg) {
       lightboxImg.addEventListener('click', (e) => {
+        e.stopPropagation();
+      });
+    }
+
+    if (lightboxEditSend) {
+      lightboxEditSend.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await startEditFromLightbox();
+      });
+    }
+
+      if (lightboxEditInput) {
+        lightboxEditInput.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+      lightboxEditInput.addEventListener('focus', () => {
+        setTimeout(updateLightboxKeyboardShift, 80);
+      });
+      lightboxEditInput.addEventListener('blur', () => {
+        setTimeout(updateLightboxKeyboardShift, 80);
+      });
+      lightboxEditInput.addEventListener('keydown', async (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+          e.preventDefault();
+          await startEditFromLightbox();
+        }
+      });
+    }
+
+    if (lightboxEditor) {
+      lightboxEditor.addEventListener('click', (e) => {
         e.stopPropagation();
       });
     }
@@ -1212,13 +2099,34 @@
       
       if (e.key === 'Escape') {
         lightbox.classList.remove('active');
+        setLightboxKeyboardShift(0);
         currentImageIndex = -1;
+        if (lightboxEditSend) {
+          lightboxEditSend.textContent = '发送编辑';
+          lightboxEditSend.disabled = true;
+        }
+        if (lightboxEditInput) {
+          lightboxEditInput.value = '';
+          lightboxEditInput.disabled = false;
+        }
+        hideEditProgress();
+        renderLightboxHistory(null);
+        resumeWsAfterEdit();
       } else if (e.key === 'ArrowLeft') {
         showPrevImage();
       } else if (e.key === 'ArrowRight') {
         showNextImage();
       }
     });
+  }
+
+  window.addEventListener('resize', updateLightboxKeyboardShift);
+  window.addEventListener('orientationchange', () => {
+    setTimeout(updateLightboxKeyboardShift, 120);
+  });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', updateLightboxKeyboardShift);
+    window.visualViewport.addEventListener('scroll', updateLightboxKeyboardShift);
   }
 
   // Make floating actions draggable

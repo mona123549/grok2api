@@ -783,6 +783,7 @@ html[data-theme='dark'] .waterfall-item.selected .image-checkbox::after {
 
 /* 图片放大预览 */
 .image-lightbox {
+  --keyboard-shift: 0px;
   display: none;
   position: fixed;
   top: 0;
@@ -803,10 +804,11 @@ html[data-theme='dark'] .waterfall-item.selected .image-checkbox::after {
 
 .image-lightbox img {
   max-width: 90%;
-  max-height: 90%;
+  max-height: calc(90% - var(--keyboard-shift));
   object-fit: contain;
   border-radius: 8px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  transform: translateY(calc(var(--keyboard-shift) * -0.35));
 }
 
 .lightbox-close {
@@ -834,7 +836,7 @@ html[data-theme='dark'] .waterfall-item.selected .image-checkbox::after {
   position: absolute;
   left: 50%;
   bottom: 20px;
-  transform: translateX(-50%);
+  transform: translateX(-50%) translateY(calc(var(--keyboard-shift) * -1));
   z-index: 10001;
   width: min(1100px, calc(100vw - 32px));
   display: flex;
@@ -1137,7 +1139,7 @@ html[data-theme='dark'] .waterfall-item.selected .image-checkbox::after {
   .lightbox-editor {
     width: calc(100vw - 20px);
     left: 10px;
-    transform: none;
+    transform: translateY(calc(var(--keyboard-shift) * -1));
     bottom: 10px;
     padding: 8px;
   }
