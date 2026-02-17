@@ -673,6 +673,12 @@ td.table-empty {
     background: #fff;
     color: #111;
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-fab-toggle:active {
+    background: #f3f4f6;
+    border-color: #d1d5db;
   }
 
   .mobile-fab-toggle svg {
@@ -861,6 +867,11 @@ html[data-theme='dark'] .mobile-fab-toggle {
 
 html[data-theme='dark'] .mobile-fab-toggle {
   color: var(--fg);
+}
+
+html[data-theme='dark'] .mobile-fab-toggle:active {
+  background: #1a2330 !important;
+  border-color: #3b4654 !important;
 }
 
 html[data-theme='dark'] .bg-white {
