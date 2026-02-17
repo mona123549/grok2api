@@ -18,7 +18,7 @@
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
   <script src="/static/common/js/theme.js?v=0.1.0"></script>
   <link href="/static/common/css/common.css?v=0.3.7" rel="stylesheet">
-  <link href="/static/public/css/video.css?v=0.3.6" rel="stylesheet">
+  <link href="/static/public/css/video.css?v=0.3.7" rel="stylesheet">
   <link href="/static/common/css/toast.css" rel="stylesheet">
 </head>
 
@@ -225,6 +225,47 @@
           <div class="preview-actions">
             <button id="spliceBtn" class="geist-button text-xs px-3">拼接视频</button>
           </div>
+          <div class="video-card manual-merge-card">
+            <div class="video-preview-header">
+              <div class="card-title">手动两段拼接</div>
+              <div class="preview-actions">
+                <button id="pickMergeVideoBtn" class="geist-button-outline text-xs px-3" type="button">选择视频2</button>
+                <button id="directMergeBtn" class="geist-button-outline text-xs px-3" type="button">手动拼接</button>
+              </div>
+            </div>
+            <div class="meta-grid edit-meta-grid">
+              <div class="meta-item"><div class="meta-label">视频1(A)</div><div id="mergeVideoA" class="meta-value">-</div></div>
+              <div class="meta-item"><div class="meta-label">视频2(B)</div><div id="mergeVideoB" class="meta-value">-</div></div>
+            </div>
+            <div class="manual-merge-grid">
+              <div class="manual-merge-col">
+                <div class="meta-label">视频1拼接帧（取左侧）</div>
+                <div class="edit-preview-wrap">
+                  <video id="mergeVideoPreviewA" controls preload="metadata"></video>
+                </div>
+                <div class="edit-slider-wrap">
+                  <input id="mergeTimelineA" type="range" min="0" max="100000" step="1" value="0">
+                  <div class="progress-meta">
+                    <span id="mergeTimeTextA">00:00.000</span>
+                    <span id="mergeDurationA">总时长 -</span>
+                  </div>
+                </div>
+              </div>
+              <div class="manual-merge-col">
+                <div class="meta-label">视频2拼接帧（取右侧）</div>
+                <div class="edit-preview-wrap">
+                  <video id="mergeVideoPreviewB" controls preload="metadata"></video>
+                </div>
+                <div class="edit-slider-wrap">
+                  <input id="mergeTimelineB" type="range" min="0" max="100000" step="1" value="0">
+                  <div class="progress-meta">
+                    <span id="mergeTimeTextB">00:00.000</span>
+                    <span id="mergeDurationB">总时长 -</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -274,7 +315,7 @@
   <script src="/static/common/js/pwa.js?v=0.1.1"></script>
   <script src="/static/vendor/ffmpeg/ffmpeg.js?v=0.1.0"></script>
   <script src="/static/vendor/ffmpeg/ffmpeg-util.js?v=0.1.0"></script>
-  <script src="/static/public/js/video.js?v=0.4.8"></script>
+  <script src="/static/public/js/video.js?v=0.4.9"></script>
 </body>
 
 </html>

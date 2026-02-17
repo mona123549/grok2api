@@ -21,6 +21,18 @@
   const editLengthSelect = document.getElementById('editLengthSelect');
   const editPromptInput = document.getElementById('editPromptInput');
   const spliceBtn = document.getElementById('spliceBtn');
+  const pickMergeVideoBtn = document.getElementById('pickMergeVideoBtn');
+  const directMergeBtn = document.getElementById('directMergeBtn');
+  const mergeVideoA = document.getElementById('mergeVideoA');
+  const mergeVideoB = document.getElementById('mergeVideoB');
+  const mergeVideoPreviewA = document.getElementById('mergeVideoPreviewA');
+  const mergeVideoPreviewB = document.getElementById('mergeVideoPreviewB');
+  const mergeTimelineA = document.getElementById('mergeTimelineA');
+  const mergeTimelineB = document.getElementById('mergeTimelineB');
+  const mergeTimeTextA = document.getElementById('mergeTimeTextA');
+  const mergeTimeTextB = document.getElementById('mergeTimeTextB');
+  const mergeDurationA = document.getElementById('mergeDurationA');
+  const mergeDurationB = document.getElementById('mergeDurationB');
   const promptInput = document.getElementById('promptInput');
   const imageUrlInput = document.getElementById('imageUrlInput');
   const parentPostInput = document.getElementById('parentPostInput');
@@ -73,6 +85,11 @@
   let ffmpegLoading = false;
   const DEFAULT_REASONING_EFFORT = 'low';
   const EDIT_TIMELINE_MAX = 100000;
+  let mergeTargetVideoUrl = '';
+  let mergeTargetVideoName = '';
+  let mergeCutMsA = 0;
+  let mergeCutMsB = 0;
+  let cacheModalPickMode = 'edit';
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -100,6 +117,15 @@
     if (editFrameIndex) editFrameIndex.textContent = lockedFrameIndex >= 0 ? String(lockedFrameIndex) : '-';
     if (editTimestampMs) editTimestampMs.textContent = String(Math.max(0, Math.round(lockedTimestampMs)));
     if (editFrameHash) editFrameHash.textContent = shortHash(lastFrameHash);
+  }
+
+  function updateMergeLabels() {
+    if (mergeVideoA) {
+      mergeVideoA.textContent = selectedVideoUrl ? shortHash(selectedVideoUrl) : '-';
+    }
+    if (mergeVideoB) {
+      mergeVideoB.textContent = mergeTargetVideoName || (mergeTargetVideoUrl ? shortHash(mergeTargetVideoUrl) : '-');
+    }
   }
 
   function getParentMemoryApi() {
@@ -355,8 +381,13 @@
       previewCount = 0;
       selectedVideoItemId = '';
       selectedVideoUrl = '';
+      mergeTargetVideoUrl = '';
+      mergeTargetVideoName = '';
+      mergeCutMsA = 0;
+      mergeCutMsB = 0;
       if (enterEditBtn) enterEditBtn.disabled = true;
       closeEditPanel();
+      updateMergeLabels();
     }
     if (durationValue) {
       durationValue.textContent = '耗时 -';
@@ -398,9 +429,15 @@
     editBtn.type = 'button';
     editBtn.textContent = '编辑';
 
+    const setBBtn = document.createElement('button');
+    setBBtn.className = 'geist-button-outline text-xs px-3 video-set-b';
+    setBBtn.type = 'button';
+    setBBtn.textContent = '设为视频2';
+
     actions.appendChild(openBtn);
     actions.appendChild(downloadBtn);
     actions.appendChild(editBtn);
+    actions.appendChild(setBBtn);
     header.appendChild(title);
     header.appendChild(actions);
 
@@ -978,6 +1015,28 @@
     lockedTimestampMs = 0;
     lastFrameHash = '';
     setEditMeta();
+    updateMergeLabels();
+    bindMergeVideoA(safeUrl);
+  }
+
+  function bindMergeVideoA(url) {
+    const safeUrl = String(url || '').trim();
+    if (!mergeVideoPreviewA) return;
+    mergeVideoPreviewA.src = safeUrl;
+    mergeVideoPreviewA.load();
+    mergeCutMsA = 0;
+    if (mergeTimeTextA) mergeTimeTextA.textContent = formatMs(0);
+    if (mergeTimelineA) mergeTimelineA.value = '0';
+  }
+
+  function bindMergeVideoB(url) {
+    const safeUrl = String(url || '').trim();
+    if (!mergeVideoPreviewB) return;
+    mergeVideoPreviewB.src = safeUrl;
+    mergeVideoPreviewB.load();
+    mergeCutMsB = 0;
+    if (mergeTimeTextB) mergeTimeTextB.textContent = formatMs(0);
+    if (mergeTimelineB) mergeTimelineB.value = '0';
   }
 
   function openEditPanel() {
@@ -1080,6 +1139,15 @@
   function useCachedVideo(url, name) {
     const safeUrl = String(url || '').trim();
     if (!safeUrl) return;
+    if (cacheModalPickMode === 'merge_target') {
+      mergeTargetVideoUrl = safeUrl;
+      mergeTargetVideoName = String(name || '').trim();
+      updateMergeLabels();
+      bindMergeVideoB(safeUrl);
+      closeCacheVideoModal();
+      toast('已选择视频2', 'success');
+      return;
+    }
     selectedVideoItemId = `cache-${Date.now()}`;
     selectedVideoUrl = safeUrl;
     if (imageUrlInput) imageUrlInput.value = safeUrl;
@@ -1564,6 +1632,140 @@
     }
   }
 
+  async function concatTwoVideosManual(videoAUrl, videoBUrl, cutAMs, cutBMs) {
+    const bufferA = await fetchArrayBuffer(videoAUrl);
+    const bufferB = await fetchArrayBuffer(videoBUrl);
+    const cutA = (Math.max(0, Number(cutAMs) || 0) / 1000).toFixed(3);
+    const cutB = (Math.max(0, Number(cutBMs) || 0) / 1000).toFixed(3);
+
+    const runOnce = async () => {
+      await resetFfmpegInstance();
+      const ff = await ensureFfmpeg();
+      const prefix = ffTaskPrefix('manual_merge');
+      const srcA = `${prefix}_a_source.mp4`;
+      const srcB = `${prefix}_b_source.mp4`;
+      const segA = `${prefix}_a.mp4`;
+      const segB = `${prefix}_b.mp4`;
+      const segANorm = `${prefix}_a_norm.mp4`;
+      const segBNorm = `${prefix}_b_norm.mp4`;
+      const list = `${prefix}_list.txt`;
+      const out = `${prefix}_out.mp4`;
+      const files = [srcA, srcB, segA, segB, segANorm, segBNorm, list, out];
+      try {
+        await ffmpegWriteFile(ff, srcA, bufferA);
+        await ffmpegWriteFile(ff, srcB, bufferB);
+
+        let hasA = false;
+        let hasB = false;
+        if (Number(cutA) > 0) {
+          await ffmpegExec(ff, ['-y', '-i', srcA, '-t', cutA, '-c', 'copy', segA]);
+          hasA = true;
+        }
+        await ffmpegExec(ff, ['-y', '-ss', cutB, '-i', srcB, '-c', 'copy', segB]);
+        hasB = true;
+
+        const parts = [];
+        if (hasA) parts.push(segA);
+        if (hasB) parts.push(segB);
+        if (!parts.length) {
+          throw new Error('manual_merge_empty_output');
+        }
+
+        await ffmpegWriteFile(
+          ff,
+          list,
+          new TextEncoder().encode(parts.map((p) => `file '${p}'`).join('\n') + '\n')
+        );
+        try {
+          await ffmpegExec(ff, ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', out]);
+        } catch (copyErr) {
+          if (hasA) {
+            await ffmpegExec(
+              ff,
+              ['-y', '-i', srcA, '-t', cutA, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', segANorm]
+            );
+          }
+          await ffmpegExec(
+            ff,
+            ['-y', '-ss', cutB, '-i', srcB, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', segBNorm]
+          );
+          const normParts = [];
+          if (hasA) normParts.push(segANorm);
+          normParts.push(segBNorm);
+          await ffmpegWriteFile(
+            ff,
+            list,
+            new TextEncoder().encode(normParts.map((p) => `file '${p}'`).join('\n') + '\n')
+          );
+          await ffmpegExec(
+            ff,
+            ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', out]
+          );
+        }
+        const merged = await ffmpegReadFile(ff, out);
+        return new Blob([toStableUint8(merged)], { type: 'video/mp4' });
+      } finally {
+        for (const f of files) {
+          await ffmpegDeleteFileSafe(ff, f);
+        }
+      }
+    };
+
+    try {
+      return await runOnce();
+    } catch (e) {
+      if (isFsError(e)) {
+        return await runOnce();
+      }
+      throw e;
+    }
+  }
+
+  async function directMergeTwoVideos() {
+    const sourceA = String(selectedVideoUrl || '').trim();
+    const sourceB = String(mergeTargetVideoUrl || '').trim();
+    if (!sourceA) {
+      toast('请先选中视频1', 'warning');
+      return;
+    }
+    if (!sourceB) {
+      toast('请先选择视频2', 'warning');
+      return;
+    }
+    if (sourceA === sourceB) {
+      toast('视频1和视频2不能相同', 'warning');
+      return;
+    }
+    if (editingBusy) {
+      toast('拼接任务进行中', 'warning');
+      return;
+    }
+    editingBusy = true;
+    if (directMergeBtn) directMergeBtn.disabled = true;
+    setStatus('connecting', '手动两段拼接处理中');
+    try {
+      const mergedBlob = await concatTwoVideosManual(sourceA, sourceB, mergeCutMsA, mergeCutMsB);
+      const mergedUrl = URL.createObjectURL(mergedBlob);
+      const item = initPreviewSlot() || null;
+      if (item) {
+        selectedVideoItemId = String(item.dataset.index || '');
+        item.dataset.url = mergedUrl;
+        setPreviewTitle(item, `视频 ${selectedVideoItemId} · 手动拼接`);
+        renderVideoFromUrl({ previewItem: item }, mergedUrl);
+        refreshVideoSelectionUi();
+      }
+      bindEditVideoSource(mergedUrl);
+      setStatus('connected', '手动拼接完成');
+      toast('手动拼接完成', 'success');
+    } catch (e) {
+      setStatus('error', '手动拼接失败');
+      toast(`手动拼接失败: ${String(e && e.message ? e.message : e)}`, 'error');
+    } finally {
+      editingBusy = false;
+      if (directMergeBtn) directMergeBtn.disabled = false;
+    }
+  }
+
   async function runSplice() {
     if (editingBusy) {
       toast('拼接任务进行中', 'warning');
@@ -1721,15 +1923,91 @@
     });
   }
 
+  if (mergeVideoPreviewA) {
+    mergeVideoPreviewA.addEventListener('loadedmetadata', () => {
+      const duration = Number(mergeVideoPreviewA.duration || 0);
+      if (mergeDurationA) {
+        mergeDurationA.textContent = duration > 0 ? `总时长 ${formatMs(duration * 1000)}` : '总时长 -';
+      }
+      mergeCutMsA = 0;
+      if (mergeTimeTextA) mergeTimeTextA.textContent = formatMs(0);
+      if (mergeTimelineA) mergeTimelineA.value = '0';
+    });
+  }
+
+  if (mergeVideoPreviewB) {
+    mergeVideoPreviewB.addEventListener('loadedmetadata', () => {
+      const duration = Number(mergeVideoPreviewB.duration || 0);
+      if (mergeDurationB) {
+        mergeDurationB.textContent = duration > 0 ? `总时长 ${formatMs(duration * 1000)}` : '总时长 -';
+      }
+      mergeCutMsB = 0;
+      if (mergeTimeTextB) mergeTimeTextB.textContent = formatMs(0);
+      if (mergeTimelineB) mergeTimelineB.value = '0';
+    });
+  }
+
+  if (mergeTimelineA) {
+    mergeTimelineA.addEventListener('input', () => {
+      if (!mergeVideoPreviewA) return;
+      const duration = Number(mergeVideoPreviewA.duration || 0);
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      const ratio = Number(mergeTimelineA.value || 0) / EDIT_TIMELINE_MAX;
+      const nextTime = Math.max(0, Math.min(duration, duration * ratio));
+      mergeVideoPreviewA.currentTime = nextTime;
+      mergeCutMsA = Math.round(nextTime * 1000);
+      if (mergeTimeTextA) mergeTimeTextA.textContent = formatMs(mergeCutMsA);
+    });
+  }
+
+  if (mergeTimelineB) {
+    mergeTimelineB.addEventListener('input', () => {
+      if (!mergeVideoPreviewB) return;
+      const duration = Number(mergeVideoPreviewB.duration || 0);
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      const ratio = Number(mergeTimelineB.value || 0) / EDIT_TIMELINE_MAX;
+      const nextTime = Math.max(0, Math.min(duration, duration * ratio));
+      mergeVideoPreviewB.currentTime = nextTime;
+      mergeCutMsB = Math.round(nextTime * 1000);
+      if (mergeTimeTextB) mergeTimeTextB.textContent = formatMs(mergeCutMsB);
+    });
+  }
+
   if (spliceBtn) {
     spliceBtn.addEventListener('click', () => {
       runSplice();
     });
   }
 
+  if (directMergeBtn) {
+    directMergeBtn.addEventListener('click', () => {
+      directMergeTwoVideos();
+    });
+  }
+
   if (pickCachedVideoBtn) {
     pickCachedVideoBtn.addEventListener('click', async () => {
       try {
+        cacheModalPickMode = 'edit';
+        openCacheVideoModal();
+        if (cacheVideoList) {
+          cacheVideoList.innerHTML = '<div class="video-empty">正在读取缓存视频...</div>';
+        }
+        const items = await loadCachedVideos();
+        renderCachedVideoList(items);
+      } catch (e) {
+        if (cacheVideoList) {
+          cacheVideoList.innerHTML = '<div class="video-empty">读取失败，请稍后重试</div>';
+        }
+        toast('读取缓存视频失败', 'error');
+      }
+    });
+  }
+
+  if (pickMergeVideoBtn) {
+    pickMergeVideoBtn.addEventListener('click', async () => {
+      try {
+        cacheModalPickMode = 'merge_target';
         openCacheVideoModal();
         if (cacheVideoList) {
           cacheVideoList.innerHTML = '<div class="video-empty">正在读取缓存视频...</div>';
@@ -1775,12 +2053,28 @@
       if (!(target instanceof HTMLElement)) return;
       const item = target.closest('.video-item');
       if (!item) return;
+      if (target.classList.contains('video-set-b')) {
+        event.preventDefault();
+        const bUrl = String(item.dataset.url || '').trim();
+        if (!bUrl) {
+          toast('该视频暂无可用地址', 'warning');
+          return;
+        }
+        mergeTargetVideoUrl = bUrl;
+        mergeTargetVideoName = `视频 ${String(item.dataset.index || '')}`;
+        updateMergeLabels();
+        bindMergeVideoB(mergeTargetVideoUrl);
+        toast('已将该视频设为视频2', 'success');
+        return;
+      }
       selectedVideoItemId = String(item.dataset.index || '');
       selectedVideoUrl = String(item.dataset.url || '');
       refreshVideoSelectionUi();
       if (enterEditBtn) {
         enterEditBtn.disabled = !selectedVideoUrl;
       }
+      updateMergeLabels();
+      bindMergeVideoA(selectedVideoUrl);
       if (target.classList.contains('video-edit')) {
         event.preventDefault();
         openEditPanel();
@@ -2024,6 +2318,7 @@
     });
 
   updateMeta();
+  updateMergeLabels();
   if (imageUrlInput && imageUrlInput.value.trim()) {
     const resolved = resolveReferenceByText(imageUrlInput.value.trim());
     setReferencePreview(resolved.url || resolved.sourceUrl || imageUrlInput.value.trim(), resolved.parentPostId || '');
