@@ -224,12 +224,12 @@ class GrokChatService:
             model_config_override["reasoningEffort"] = reasoning_effort
 
         response = await self.chat(
-            token,
-            message,
-            grok_model,
+            token=token,
+            message=message,
+            model=grok_model,
             requested_model=model,
-            mode,
-            stream,
+            mode=mode,
+            stream=stream,
             file_attachments=all_attachments,
             model_config_override=model_config_override,
         )
