@@ -117,13 +117,13 @@ body {
 }
 
 .history-panel .video-item-bar {
-  flex-wrap: nowrap;
-  align-items: center;
+  display: block;
 }
 
 .history-panel .video-item-title {
-  flex: 1;
-  min-width: 0;
+  display: block;
+  width: 100%;
+  min-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -135,7 +135,9 @@ body {
 }
 
 .history-panel .video-item-actions {
-  flex-shrink: 0;
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
   gap: 6px;
 }
 
