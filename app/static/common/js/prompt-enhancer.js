@@ -1,5 +1,6 @@
 (() => {
   const enhanceStateMap = new WeakMap();
+  const enhanceRequestMap = new WeakMap();
 
   function toast(message, type) {
     if (typeof window.showToast === 'function') {
@@ -15,16 +16,47 @@
       .prompt-enhance-wrap {
         position: relative;
         width: 100%;
+        --pe-action-width: 104px;
+        --pe-action-height: 30px;
+        --pe-action-radius: 8px;
+        --pe-slash-size: 8px;
+        --pe-lang-share: 40%;
+        --pe-border-color: #5f7087;
+        --pe-scrollbar-thumb: rgba(110, 132, 160, 0.82);
+        --pe-scrollbar-thumb-hover: rgba(86, 112, 145, 0.95);
+        --pe-scrollbar-track: rgba(148, 163, 184, 0.18);
       }
       .prompt-enhance-wrap > textarea {
         padding-bottom: 40px;
+        scrollbar-width: thin;
+        scrollbar-color: var(--pe-scrollbar-thumb) var(--pe-scrollbar-track);
+      }
+      .prompt-enhance-wrap > textarea::-webkit-scrollbar {
+        width: 7px;
+        height: 7px;
+      }
+      .prompt-enhance-wrap > textarea::-webkit-scrollbar-track {
+        background: var(--pe-scrollbar-track);
+        border-radius: 999px;
+      }
+      .prompt-enhance-wrap > textarea::-webkit-scrollbar-thumb {
+        background: var(--pe-scrollbar-thumb);
+        border-radius: 999px;
+        border: 1px solid transparent;
+        background-clip: padding-box;
+      }
+      .prompt-enhance-wrap > textarea:hover::-webkit-scrollbar-thumb {
+        background: var(--pe-scrollbar-thumb-hover);
+      }
+      .prompt-enhance-wrap > textarea:focus::-webkit-scrollbar-thumb {
+        background: var(--pe-scrollbar-thumb-hover);
       }
       .prompt-enhance-wrap.lightbox-mode > textarea {
         width: 100%;
         display: block;
         box-sizing: border-box;
         padding-left: 12px;
-        padding-right: 124px;
+        padding-right: calc(var(--pe-action-width) + 20px);
         min-height: 84px;
       }
       .prompt-enhance-wrap.lightbox-mode {
@@ -32,6 +64,17 @@
         min-width: 0;
         width: 100%;
         position: relative;
+      }
+      .prompt-enhance-wrap > .prompt-enhance-actions {
+        position: absolute;
+        right: 10px;
+        bottom: 10px;
+        z-index: 3;
+        width: var(--pe-action-width);
+        height: var(--pe-action-height);
+        display: flex;
+        align-items: stretch;
+        justify-content: stretch;
       }
       .prompt-enhance-wrap.lightbox-mode > .inline-send-inside,
       .prompt-enhance-wrap.lightbox-mode > #lightboxEditSend,
@@ -48,21 +91,21 @@
         border-radius: 8px;
         flex: none !important;
       }
-      .prompt-enhance-wrap.lightbox-mode > .prompt-enhance-btn {
-        position: absolute !important;
+      .prompt-enhance-wrap.lightbox-mode > .prompt-enhance-actions {
         right: 10px !important;
         bottom: 46px !important;
         z-index: 4;
-        height: 30px !important;
-        min-width: 104px;
-        width: auto !important;
-        margin: 0 !important;
-        padding: 0 12px !important;
       }
       @media (max-width: 768px) {
+        .prompt-enhance-wrap {
+          --pe-action-width: 92px;
+          --pe-action-height: 28px;
+          --pe-slash-size: 7px;
+          --pe-lang-share: 40%;
+        }
         .prompt-enhance-wrap.lightbox-mode > textarea {
           padding-left: 12px;
-          padding-right: 104px;
+          padding-right: calc(var(--pe-action-width) + 12px);
           padding-bottom: 50px;
           min-height: 96px;
         }
@@ -75,73 +118,119 @@
           height: 28px !important;
           padding: 0 10px !important;
         }
-        .prompt-enhance-wrap.lightbox-mode > .prompt-enhance-btn {
+        .prompt-enhance-wrap.lightbox-mode > .prompt-enhance-actions {
           right: 8px !important;
           bottom: 42px !important;
-          min-width: 92px;
-          height: 28px !important;
-          padding: 0 10px !important;
         }
       }
-      .prompt-enhance-btn {
-        position: absolute;
-        right: 10px;
-        bottom: 10px;
-        z-index: 3;
-        height: 30px;
-        min-width: 92px;
+      .prompt-enhance-actions > .prompt-enhance-btn,
+      .prompt-enhance-actions > .prompt-lang-toggle-btn {
+        height: 100%;
+        min-width: 0;
+        width: 100%;
         padding: 0 10px;
-        border-radius: 8px;
         background: var(--bg);
-        border-color: var(--border);
+        border-color: var(--pe-border-color);
         color: var(--fg);
         cursor: pointer;
         user-select: none;
+        transition: border-color .15s ease, background .15s ease;
+      }
+      .prompt-enhance-actions > .prompt-enhance-btn {
+        border-radius: var(--pe-action-radius);
+      }
+      .prompt-enhance-actions > .prompt-lang-toggle-btn {
+        display: none;
       }
       .prompt-enhance-btn:hover {
-        border-color: #000;
+        border-color: #34455d;
+        background: #e7eef8;
+        box-shadow: inset 0 0 0 1px rgba(52, 69, 93, 0.22);
+      }
+      .prompt-enhance-btn:active {
+        border-color: #2a3d57;
+        background: #dce7f6;
       }
       html[data-theme='dark'] .prompt-enhance-btn {
         background: #111821;
-        border-color: #3b4654;
+        border-color: #607286;
         color: var(--fg);
       }
       html[data-theme='dark'] .prompt-enhance-btn:hover {
-        border-color: #6b7788;
+        border-color: #7a8ea6;
         background: #1a2330;
       }
-      .prompt-lang-toggle-btn {
-        position: absolute;
-        right: 110px;
-        bottom: 10px;
-        z-index: 3;
-        height: 30px;
-        min-width: 48px;
-        padding: 0 10px;
-        border-radius: 8px;
-        background: var(--bg);
-        border-color: var(--border);
-        color: var(--fg);
-        cursor: pointer;
-        user-select: none;
-        display: none;
-      }
-      .prompt-lang-toggle-btn.is-visible {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-      }
       .prompt-lang-toggle-btn:hover {
-        border-color: #000;
+        border-color: #34455d;
+        background: #e7eef8;
+        box-shadow: inset 0 0 0 1px rgba(52, 69, 93, 0.22);
+      }
+      .prompt-lang-toggle-btn:active {
+        border-color: #2a3d57;
+        background: #dce7f6;
       }
       html[data-theme='dark'] .prompt-lang-toggle-btn {
         background: #111821;
-        border-color: #3b4654;
+        border-color: #607286;
         color: var(--fg);
       }
       html[data-theme='dark'] .prompt-lang-toggle-btn:hover {
-        border-color: #6b7788;
+        border-color: #7a8ea6;
         background: #1a2330;
+      }
+      .prompt-enhance-actions.is-group-active {
+        padding: 1px;
+        background: var(--pe-border-color);
+        border: 1px solid var(--pe-border-color);
+        border-radius: var(--pe-action-radius);
+        overflow: hidden;
+      }
+      .prompt-enhance-actions.is-group-active > .prompt-lang-toggle-btn.is-visible {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 var(--pe-lang-share);
+        max-width: none;
+        margin-right: 0;
+        border-radius: var(--pe-action-radius) 0 0 var(--pe-action-radius);
+        border: 0;
+        clip-path: polygon(0 0, 100% 0, calc(100% - var(--pe-slash-size)) 100%, 0 100%);
+        padding: 0 4px 0 8px;
+        z-index: 2;
+      }
+      .prompt-enhance-actions.is-group-active > .prompt-enhance-btn {
+        flex: 1 1 auto;
+        min-width: 0;
+        max-width: none;
+        margin-left: calc(var(--pe-slash-size) * -1);
+        border-radius: 0 var(--pe-action-radius) var(--pe-action-radius) 0;
+        border: 0;
+        clip-path: polygon(var(--pe-slash-size) 0, 100% 0, 100% 100%, 0 100%);
+        padding: 0 10px 0 calc(10px + var(--pe-slash-size));
+        z-index: 1;
+      }
+      .prompt-enhance-actions.is-group-active > .prompt-lang-toggle-btn.is-visible:hover,
+      .prompt-enhance-actions.is-group-active > .prompt-enhance-btn:hover {
+        border: 0;
+        background: #dfe9f7;
+        box-shadow: none;
+      }
+      .prompt-enhance-actions.is-group-active > .prompt-lang-toggle-btn.is-visible:active,
+      .prompt-enhance-actions.is-group-active > .prompt-enhance-btn:active {
+        border: 0;
+        background: #d3e0f4;
+        box-shadow: none;
+      }
+      html[data-theme='dark'] .prompt-enhance-actions.is-group-active > .prompt-lang-toggle-btn.is-visible:hover,
+      html[data-theme='dark'] .prompt-enhance-actions.is-group-active > .prompt-enhance-btn:hover {
+        border: 0;
+        background: #1d2a3a;
+      }
+      html[data-theme='dark'] .prompt-enhance-wrap {
+        --pe-border-color: #607286;
+        --pe-scrollbar-thumb: rgba(130, 154, 184, 0.72);
+        --pe-scrollbar-thumb-hover: rgba(156, 182, 214, 0.9);
+        --pe-scrollbar-track: rgba(86, 102, 123, 0.28);
       }
       .prompt-enhance-btn:disabled {
         opacity: 0.5;
@@ -166,18 +255,11 @@
     return false;
   }
 
-  async function callEnhanceApi(rawPrompt) {
-    if (typeof window.ensurePublicKey !== 'function' || typeof window.buildAuthHeaders !== 'function') {
-      throw new Error('public_auth_api_missing');
-    }
-    const authHeader = await window.ensurePublicKey();
-    if (authHeader === null) {
-      throw new Error('public_key_missing');
-    }
-
+  async function callEnhanceApi(rawPrompt, signal, authHeader, requestId) {
     const body = {
       prompt: rawPrompt,
       temperature: 0.7,
+      request_id: requestId,
     };
 
     const res = await fetch('/v1/public/prompt/enhance', {
@@ -185,8 +267,10 @@
       headers: {
         'Content-Type': 'application/json',
         ...window.buildAuthHeaders(authHeader),
+        'X-Enhance-Request-Id': requestId,
       },
       body: JSON.stringify(body),
+      signal,
     });
     if (!res.ok) {
       let detail = '';
@@ -206,16 +290,35 @@
     return text;
   }
 
+  function newRequestId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return window.crypto.randomUUID();
+    }
+    return `enh_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+  }
+
+  function requestEnhanceStop(meta) {
+    if (!meta || !meta.requestId || !meta.authHeader) return;
+    fetch('/v1/public/prompt/enhance/stop', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...window.buildAuthHeaders(meta.authHeader),
+      },
+      body: JSON.stringify({ request_id: meta.requestId }),
+    }).catch(() => {});
+  }
+
   function isMobileViewport() {
     return window.matchMedia('(max-width: 768px)').matches;
   }
 
   function parseEnhancedPrompt(text) {
     const raw = String(text || '').trim();
-    const headMatch = raw.match(/^([\s\S]*?)\s*最终提示词：/);
-    const enMatch = raw.match(/最终提示词：\s*([\s\S]*?)\s*中文参考版：/);
-    const zhMatch = raw.match(/中文参考版：\s*([\s\S]*?)\s*可调参数：/);
-    const tailMatch = raw.match(/(可调参数：[\s\S]*)$/);
+    const headMatch = raw.match(/^([\s\S]*?)\s*最终提示词[:：]/);
+    const enMatch = raw.match(/最终提示词[:：]\s*([\s\S]*?)\s*中文参考版[:：]/);
+    const zhMatch = raw.match(/中文参考版[:：]\s*([\s\S]*?)\s*可调参数[:：]/);
+    const tailMatch = raw.match(/(可调参数[:：][\s\S]*)$/);
     return {
       head: headMatch && headMatch[1] ? String(headMatch[1]).trim() : '',
       en: enMatch && enMatch[1] ? String(enMatch[1]).trim() : '',
@@ -232,7 +335,7 @@
   }
 
   function updateToggleButtonText(toggleBtn, mode) {
-    toggleBtn.textContent = mode === 'zh' ? '中文' : 'EN';
+    toggleBtn.textContent = mode === 'en' ? 'CN' : 'EN';
   }
 
   function setToggleButtonVisible(toggleBtn, visible) {
@@ -244,11 +347,118 @@
     enhanceBtn.textContent = mode === 'clear' ? '清空' : '增强提示词';
   }
 
-  function resetEnhancerState(textarea, enhanceBtn, toggleBtn) {
+  function pickReferenceActionButton(textarea, wrapper) {
+    if (!wrapper) return null;
+    const inlineBtn = wrapper.querySelector('.inline-submit-btn, .inline-send-inside, #lightboxEditSend, .lightbox-edit-send');
+    if (inlineBtn instanceof HTMLButtonElement) return inlineBtn;
+
+    const id = String(textarea && textarea.id ? textarea.id : '').toLowerCase();
+    if (id === 'editpromptinput') {
+      const btn = document.getElementById('submitEditBtn');
+      if (
+        btn instanceof HTMLButtonElement &&
+        btn.classList.contains('inline-submit-btn') &&
+        wrapper.contains(btn)
+      ) {
+        return btn;
+      }
+    }
+    if (id === 'lightboxeditinput') {
+      const btn = document.getElementById('lightboxEditSend');
+      if (
+        btn instanceof HTMLButtonElement &&
+        btn.classList.contains('inline-send-inside') &&
+        wrapper.contains(btn)
+      ) {
+        return btn;
+      }
+    }
+    return null;
+  }
+
+  function syncActionDimensions(textarea, wrapper, actionWrap) {
+    if (!textarea || !wrapper || !actionWrap) return null;
+    const refBtn = pickReferenceActionButton(textarea, wrapper);
+    const mobile = isMobileViewport();
+    const targetWidth = mobile ? 92 : 104;
+    const targetHeight = mobile ? 28 : 30;
+    wrapper.style.setProperty('--pe-action-width', `${targetWidth}px`);
+    wrapper.style.setProperty('--pe-action-height', `${targetHeight}px`);
+    if (!(refBtn instanceof HTMLButtonElement)) return null;
+    const style = window.getComputedStyle(refBtn);
+    const radius = parseFloat(style.borderTopLeftRadius || '8') || 8;
+    wrapper.style.setProperty('--pe-action-radius', `${Math.max(4, Math.round(radius))}px`);
+    return refBtn;
+  }
+
+  function bindActionDimensionSync(textarea, wrapper, actionWrap) {
+    const run = () => syncActionDimensions(textarea, wrapper, actionWrap);
+    let observedBtn = null;
+    let resizeObserver = null;
+    let mutationObserver = null;
+
+    const rebind = () => {
+      const nextBtn = run();
+      if (!window.ResizeObserver) return;
+      if (!resizeObserver) {
+        resizeObserver = new ResizeObserver(() => run());
+      }
+      if (observedBtn === nextBtn) return;
+      if (observedBtn) resizeObserver.unobserve(observedBtn);
+      observedBtn = nextBtn;
+      if (observedBtn) resizeObserver.observe(observedBtn);
+    };
+
+    rebind();
+    requestAnimationFrame(rebind);
+    setTimeout(rebind, 80);
+    setTimeout(rebind, 240);
+
+    window.addEventListener('resize', rebind, { passive: true });
+    mutationObserver = new MutationObserver(() => rebind());
+    mutationObserver.observe(wrapper, { childList: true });
+    wrapper.__peResizeObserver = resizeObserver;
+    wrapper.__peMutationObserver = mutationObserver;
+  }
+
+  function syncActionGroupState(enhanceBtn, toggleBtn, actionWrap) {
+    if (!actionWrap || !enhanceBtn || !toggleBtn) return;
+    const isClearMode = String(enhanceBtn.dataset.mode || 'enhance') === 'clear';
+    const isRunning = String(enhanceBtn.dataset.running || '0') === '1';
+    const langVisible = toggleBtn.classList.contains('is-visible');
+    actionWrap.classList.toggle('is-group-active', isClearMode && langVisible && !isRunning);
+  }
+
+  function setEnhanceRunning(textarea, enhanceBtn, toggleBtn, running, actionWrap) {
+    enhanceBtn.dataset.running = running ? '1' : '0';
+    if (running) {
+      enhanceBtn.textContent = '中止';
+      enhanceBtn.disabled = false;
+      if (toggleBtn) toggleBtn.disabled = true;
+      syncActionGroupState(enhanceBtn, toggleBtn, actionWrap);
+      return;
+    }
+    if (toggleBtn) toggleBtn.disabled = false;
+    setEnhanceButtonMode(enhanceBtn, String(enhanceBtn.dataset.mode || 'enhance'));
+    enhanceRequestMap.delete(textarea);
+    syncActionGroupState(enhanceBtn, toggleBtn, actionWrap);
+  }
+
+  function cancelEnhance(textarea) {
+    const requestMeta = enhanceRequestMap.get(textarea);
+    if (!requestMeta) return;
+    if (requestMeta.controller) {
+      requestMeta.controller.abort();
+    }
+    requestEnhanceStop(requestMeta);
+  }
+
+  function resetEnhancerState(textarea, enhanceBtn, toggleBtn, actionWrap) {
     enhanceStateMap.delete(textarea);
     setToggleButtonVisible(toggleBtn, false);
     updateToggleButtonText(toggleBtn, 'zh');
     setEnhanceButtonMode(enhanceBtn, 'enhance');
+    syncActionGroupState(enhanceBtn, toggleBtn, actionWrap);
   }
 
   function buildDesktopText(state, mode) {
@@ -282,25 +492,44 @@
     updateToggleButtonText(toggleBtn, state.mode);
   }
 
-  async function onEnhanceClick(textarea, enhanceBtn, toggleBtn) {
+  async function onEnhanceClick(textarea, enhanceBtn, toggleBtn, actionWrap) {
+    if (String(enhanceBtn.dataset.running || '0') === '1') {
+      cancelEnhance(textarea);
+      toast('已取消提示词增强', 'warning');
+      return;
+    }
     const currentMode = String(enhanceBtn.dataset.mode || 'enhance');
     if (currentMode === 'clear') {
       applyPromptToTextarea(textarea, '');
-      resetEnhancerState(textarea, enhanceBtn, toggleBtn);
+      resetEnhancerState(textarea, enhanceBtn, toggleBtn, actionWrap);
       toast('已清空提示词', 'success');
       return;
     }
 
     const raw = String(textarea.value || '').trim();
     if (!raw) {
-      toast('请先输入提示词', 'warning');
+      toast('请输入提示词', 'warning');
       return;
     }
-    enhanceBtn.disabled = true;
-    toggleBtn.disabled = true;
-    enhanceBtn.textContent = '增强中...';
+    if (typeof window.ensurePublicKey !== 'function' || typeof window.buildAuthHeaders !== 'function') {
+      toast('公共鉴权脚本未加载', 'error');
+      return;
+    }
+    const authHeader = await window.ensurePublicKey();
+    if (authHeader === null) {
+      toast('请先配置 Public Key', 'error');
+      return;
+    }
+    const requestId = newRequestId();
+    const controller = new AbortController();
+    enhanceRequestMap.set(textarea, {
+      controller,
+      requestId,
+      authHeader,
+    });
+    setEnhanceRunning(textarea, enhanceBtn, toggleBtn, true, actionWrap);
     try {
-      const enhanced = await callEnhanceApi(raw);
+      const enhanced = await callEnhanceApi(raw, controller.signal, authHeader, requestId);
       const parsed = parseEnhancedPrompt(enhanced);
       const hasDualLanguage = Boolean(parsed.en && parsed.zh && parsed.head && parsed.tail);
       const mode = ((enhanceStateMap.get(textarea) || {}).mode || 'zh');
@@ -322,18 +551,17 @@
         applyPromptToTextarea(textarea, parsed.raw);
       }
       setEnhanceButtonMode(enhanceBtn, 'clear');
+      syncActionGroupState(enhanceBtn, toggleBtn, actionWrap);
       toast('提示词增强完成', 'success');
     } catch (e) {
-      const msg = String(e && e.message ? e.message : e);
-      if (msg === 'public_key_missing') {
-        toast('请先配置 Public Key', 'error');
-      } else {
-        toast(`提示词增强失败: ${msg}`, 'error');
+      if (e && e.name === 'AbortError') {
+        toast('已取消提示词增强', 'warning');
+        return;
       }
+      const msg = String(e && e.message ? e.message : e);
+      toast(`提示词增强失败: ${msg}`, 'error');
     } finally {
-      enhanceBtn.disabled = false;
-      toggleBtn.disabled = false;
-      setEnhanceButtonMode(enhanceBtn, String(enhanceBtn.dataset.mode || 'enhance'));
+      setEnhanceRunning(textarea, enhanceBtn, toggleBtn, false, actionWrap);
     }
   }
 
@@ -376,6 +604,10 @@
       }
     }
 
+    const actionWrap = document.createElement('div');
+    actionWrap.className = 'prompt-enhance-actions';
+    wrapper.appendChild(actionWrap);
+
     const langBtn = document.createElement('button');
     langBtn.type = 'button';
     langBtn.className = 'geist-button-outline prompt-lang-toggle-btn';
@@ -389,14 +621,16 @@
       const nextMode = (state.mode || 'zh') === 'zh' ? 'en' : 'zh';
       applyEnhancedByMode(textarea, langBtn, nextMode);
     });
-    wrapper.appendChild(langBtn);
+    actionWrap.appendChild(langBtn);
 
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'geist-button-outline prompt-enhance-btn';
     setEnhanceButtonMode(button, 'enhance');
-    button.addEventListener('click', () => onEnhanceClick(textarea, button, langBtn));
-    wrapper.appendChild(button);
+    button.addEventListener('click', () => onEnhanceClick(textarea, button, langBtn, actionWrap));
+    actionWrap.appendChild(button);
+    syncActionGroupState(button, langBtn, actionWrap);
+    bindActionDimensionSync(textarea, wrapper, actionWrap);
 
     textarea.dataset.promptEnhancerMounted = '1';
   }
@@ -413,3 +647,4 @@
     init();
   }
 })();
+

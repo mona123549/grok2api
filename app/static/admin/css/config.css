@@ -57,3 +57,22 @@
   top: 50%;
   transform: translateY(-50%);
 }
+
+@media (max-width: 900px) {
+  .config-section {
+    padding: 14px;
+    border-radius: 10px;
+  }
+
+  .config-field.has-action {
+    padding-right: 0;
+    padding-bottom: 40px;
+  }
+
+  .config-field-action {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    transform: none;
+  }
+}

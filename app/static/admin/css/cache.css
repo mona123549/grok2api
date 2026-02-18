@@ -302,3 +302,43 @@
   box-shadow: 0 0 0 2px #000;
   border-color: #000;
 }
+
+@media (max-width: 900px) {
+  #batch-actions {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    transform: none;
+    border-radius: 14px;
+    padding: 10px;
+    white-space: normal;
+    gap: 8px;
+  }
+
+  #batch-actions .toolbar-sep {
+    display: none;
+  }
+
+  #batch-actions .batch-action-buttons {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  #batch-actions .batch-action-buttons .geist-button-outline,
+  #batch-actions .batch-action-buttons .geist-button-danger {
+    flex: 1;
+    min-width: 120px;
+    justify-content: center;
+  }
+
+  #batch-actions #batch-progress {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .failure-list {
+    max-height: min(46dvh, 320px);
+  }
+}

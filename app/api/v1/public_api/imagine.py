@@ -1,7 +1,10 @@
 import asyncio
+import contextlib
+import re
 import time
 import uuid
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlparse
 
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -13,6 +16,7 @@ from app.core.config import get_config
 from app.core.logger import logger
 from app.api.v1.image import resolve_aspect_ratio
 from app.services.grok.services.image import ImageGenerationService
+from app.services.grok.services.image_edit import ImageEditService
 from app.services.grok.services.model import ModelService
 from app.services.token.manager import get_token_manager
 
@@ -21,6 +25,136 @@ router = APIRouter()
 IMAGINE_SESSION_TTL = 600
 _IMAGINE_SESSIONS: dict[str, dict] = {}
 _IMAGINE_SESSIONS_LOCK = asyncio.Lock()
+_RATIO_ALLOWED = {"16:9", "9:16", "3:2", "2:3", "1:1"}
+IMAGINE_IMAGE_TOKEN_TTL = 7200
+_IMAGINE_IMAGE_TOKENS: dict[str, dict] = {}
+_IMAGINE_IMAGE_TOKENS_LOCK = asyncio.Lock()
+
+
+def _validate_parent_post_id(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="parent_post_id cannot be empty")
+    if not re.fullmatch(r"[0-9a-fA-F-]{32,36}", raw):
+        raise HTTPException(status_code=400, detail="parent_post_id format is invalid")
+    return raw
+
+
+def _build_imagine_public_url(parent_post_id: str) -> str:
+    return f"https://imagine-public.x.ai/imagine-public/images/{parent_post_id}.jpg"
+
+
+def _extract_parent_post_id_from_url(url: str) -> str:
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"[0-9a-fA-F-]{32,36}", text):
+        return text
+
+    # 优先匹配真正的图片产物 ID，避免误取 /users/<user_id>。
+    for pattern in (
+        r"/generated/([0-9a-fA-F-]{32,36})(?:/|$)",
+        r"/imagine-public/images/([0-9a-fA-F-]{32,36})(?:\.jpg|/|$)",
+        r"/images/([0-9a-fA-F-]{32,36})(?:\.jpg|/|$)",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+
+    matches = re.findall(r"([0-9a-fA-F-]{32,36})", text)
+    return matches[-1] if matches else ""
+
+
+def _to_assets_url(path: str) -> str:
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith("/"):
+        raw = f"/{raw}"
+    return f"https://assets.grok.com{raw}"
+
+
+def _resolve_source_image_url(
+    image_url: str,
+    parent_post_id: str = "",
+    fallback_source_image_url: str = "",
+) -> str:
+    raw = str(image_url or "").strip() or str(fallback_source_image_url or "").strip()
+    if raw:
+        if raw.startswith("http://") or raw.startswith("https://"):
+            parsed = urlparse(raw)
+            host = (parsed.netloc or "").lower()
+            path = parsed.path or ""
+            if "assets.grok.com" in host and path:
+                return _to_assets_url(path)
+            if "imagine-public.x.ai" in host:
+                return raw
+            marker = "/v1/files/image/"
+            if marker in path:
+                suffix = path.split(marker, 1)[1]
+                return _to_assets_url(suffix)
+            if path.startswith("/users/"):
+                return _to_assets_url(path)
+            return raw
+        if raw.startswith("/v1/files/image/"):
+            suffix = raw.split("/v1/files/image/", 1)[1]
+            return _to_assets_url(suffix)
+        if raw.startswith("/users/") or raw.startswith("users/"):
+            return _to_assets_url(raw)
+        if raw.startswith("/imagine-public/images/"):
+            return f"https://imagine-public.x.ai{raw}"
+
+    parsed_parent = _extract_parent_post_id_from_url(parent_post_id)
+    if parsed_parent:
+        return _build_imagine_public_url(parsed_parent)
+    return ""
+
+
+def _mask_token(token: str) -> str:
+    raw = str(token or "").replace("sso=", "")
+    if len(raw) <= 12:
+        return raw or "-"
+    return f"{raw[:6]}...{raw[-6:]}"
+
+
+def _extract_parent_post_id_from_payload(payload: Dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    candidates = [
+        payload.get("parent_post_id"),
+        payload.get("parentPostId"),
+        payload.get("image_id"),
+        payload.get("imageId"),
+        payload.get("url"),
+        payload.get("image"),
+    ]
+    for value in candidates:
+        parent_post_id = _extract_parent_post_id_from_url(str(value or ""))
+        if parent_post_id:
+            return parent_post_id
+    return ""
+
+
+def _normalize_image_input(image_base64: str, image_url: str) -> str:
+    raw_b64 = str(image_base64 or "").strip()
+    raw_url = str(image_url or "").strip()
+    if raw_b64:
+        if raw_b64.startswith("data:"):
+            return raw_b64
+        compact = re.sub(r"\s+", "", raw_b64)
+        if not compact:
+            raise HTTPException(status_code=400, detail="image_base64 is empty")
+        if not re.fullmatch(r"[A-Za-z0-9+/=_-]+", compact):
+            raise HTTPException(status_code=400, detail="image_base64 format is invalid")
+        return f"data:image/png;base64,{compact}"
+    if raw_url:
+        if raw_url.startswith("http://") or raw_url.startswith("https://"):
+            return raw_url
+        raise HTTPException(status_code=400, detail="image_url must be http(s) URL")
+    raise HTTPException(
+        status_code=400,
+        detail="image_base64 or image_url is required for first edit",
+    )
 
 
 async def _clean_sessions(now: float) -> None:
@@ -31,6 +165,55 @@ async def _clean_sessions(now: float) -> None:
     ]
     for key in expired:
         _IMAGINE_SESSIONS.pop(key, None)
+
+
+async def _clean_image_tokens(now: float) -> None:
+    expired = [
+        key
+        for key, info in _IMAGINE_IMAGE_TOKENS.items()
+        if now - float(info.get("created_at") or 0) > IMAGINE_IMAGE_TOKEN_TTL
+    ]
+    for key in expired:
+        _IMAGINE_IMAGE_TOKENS.pop(key, None)
+
+
+async def _bind_image_token(parent_post_id: str, token: str) -> None:
+    image_id = _extract_parent_post_id_from_url(parent_post_id)
+    token_text = str(token or "").strip()
+    if not image_id or not token_text:
+        return
+    now = time.time()
+    async with _IMAGINE_IMAGE_TOKENS_LOCK:
+        await _clean_image_tokens(now)
+        _IMAGINE_IMAGE_TOKENS[image_id] = {
+            "token": token_text,
+            "created_at": now,
+        }
+
+
+async def _get_bound_image_token(parent_post_id: str) -> Optional[str]:
+    image_id = _extract_parent_post_id_from_url(parent_post_id)
+    if not image_id:
+        return None
+    now = time.time()
+    async with _IMAGINE_IMAGE_TOKENS_LOCK:
+        await _clean_image_tokens(now)
+        info = _IMAGINE_IMAGE_TOKENS.get(image_id)
+        if not info:
+            return None
+        token = str(info.get("token") or "").strip()
+        return token or None
+
+
+def _normalize_imagine_ratio(value: Optional[str]) -> str:
+    """统一解析 imagine 比例参数，兼容 ratio 与 size 两种写法。"""
+    raw = str(value or "").strip()
+    if not raw:
+        return "2:3"
+    if raw in _RATIO_ALLOWED:
+        return raw
+    mapped = resolve_aspect_ratio(raw)
+    return mapped if mapped in _RATIO_ALLOWED else "2:3"
 
 
 def _parse_sse_chunk(chunk: str) -> Optional[Dict[str, Any]]:
@@ -223,6 +406,11 @@ async def public_imagine_ws(websocket: WebSocket):
                             continue
                         if isinstance(payload, dict):
                             payload.setdefault("run_id", run_id)
+                            parent_post_id = _extract_parent_post_id_from_payload(
+                                payload
+                            )
+                            if parent_post_id:
+                                await _bind_image_token(parent_post_id, token)
                         await _send(payload)
                 else:
                     images = [img for img in result.data if img and img != "error"]
@@ -292,9 +480,7 @@ async def public_imagine_ws(websocket: WebSocket):
                         }
                     )
                     continue
-                aspect_ratio = resolve_aspect_ratio(
-                    str(payload.get("aspect_ratio") or "2:3").strip() or "2:3"
-                )
+                aspect_ratio = _normalize_imagine_ratio(payload.get("aspect_ratio"))
                 nsfw = payload.get("nsfw")
                 if nsfw is not None:
                     nsfw = bool(nsfw)
@@ -354,14 +540,13 @@ async def public_imagine_sse(
 
     if session:
         prompt = str(session.get("prompt") or "").strip()
-        ratio = str(session.get("aspect_ratio") or "2:3").strip() or "2:3"
+        ratio = _normalize_imagine_ratio(session.get("aspect_ratio"))
         nsfw = session.get("nsfw")
     else:
         prompt = (prompt or "").strip()
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-        ratio = str(aspect_ratio or "2:3").strip() or "2:3"
-        ratio = resolve_aspect_ratio(ratio)
+        ratio = _normalize_imagine_ratio(aspect_ratio)
         nsfw = request.query_params.get("nsfw")
         if nsfw is not None:
             nsfw = str(nsfw).lower() in ("1", "true", "yes", "on")
@@ -386,6 +571,10 @@ async def public_imagine_sse(
 
             while True:
                 if await request.is_disconnected():
+                    logger.info(
+                        "Imagine SSE interrupted by client disconnect: "
+                        f"task_id={task_id or '-'}, run_id={run_id}"
+                    )
                     break
                 if task_id:
                     session_alive = await _get_session(task_id)
@@ -428,6 +617,11 @@ async def public_imagine_sse(
                                 continue
                             if isinstance(payload, dict):
                                 payload.setdefault("run_id", run_id)
+                                parent_post_id = _extract_parent_post_id_from_payload(
+                                    payload
+                                )
+                                if parent_post_id:
+                                    await _bind_image_token(parent_post_id, token)
                             yield f"data: {orjson.dumps(payload).decode()}\n\n"
                     else:
                         images = [img for img in result.data if img and img != "error"]
@@ -490,9 +684,211 @@ async def public_imagine_start(data: ImagineStartRequest):
     prompt = (data.prompt or "").strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-    ratio = resolve_aspect_ratio(str(data.aspect_ratio or "2:3").strip() or "2:3")
+    ratio = _normalize_imagine_ratio(data.aspect_ratio)
     task_id = await _new_session(prompt, ratio, data.nsfw)
     return {"task_id": task_id, "aspect_ratio": ratio}
+
+
+class ImagineEditRequest(BaseModel):
+    prompt: str
+    parent_post_id: str
+    source_image_url: Optional[str] = None
+    stream: Optional[bool] = False
+
+
+@router.post("/imagine/edit", dependencies=[Depends(verify_public_key)])
+async def public_imagine_edit(data: ImagineEditRequest, request: Request):
+    prompt = (data.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+
+    parent_post_id = _validate_parent_post_id(data.parent_post_id)
+    source_image_url = (data.source_image_url or "").strip()
+    if source_image_url and not (
+        source_image_url.startswith("http://") or source_image_url.startswith("https://")
+    ):
+        raise HTTPException(status_code=400, detail="source_image_url must be http(s) URL")
+    if not source_image_url:
+        source_image_url = _build_imagine_public_url(parent_post_id)
+
+    model_id = "grok-imagine-1.0-edit"
+    model_info = ModelService.get(model_id)
+    if not model_info or not model_info.is_image_edit:
+        raise HTTPException(status_code=503, detail="Image edit model is not available")
+
+    token_mgr = await get_token_manager()
+    await token_mgr.reload_if_stale()
+    token = await _get_bound_image_token(parent_post_id)
+    if token:
+        pool_name = token_mgr.get_pool_name_for_token(token) or "-"
+        logger.info(
+            "Imagine edit token bound hit: "
+            f"parent_post_id={parent_post_id}, pool={pool_name}, token={_mask_token(token)}"
+        )
+    else:
+        for pool_name in ModelService.pool_candidates_for_model(model_id):
+            token = token_mgr.get_token(pool_name)
+            if token:
+                break
+        if token:
+            logger.info(
+                "Imagine edit token bound miss, fallback pool token: "
+                f"parent_post_id={parent_post_id}, token={_mask_token(token)}"
+            )
+    if not token:
+        raise HTTPException(
+            status_code=429,
+            detail="No available tokens. Please try again later.",
+        )
+
+    async def _run_once(
+        progress_cb=None,
+    ):
+        started_at = time.time()
+        result = await ImageEditService().edit_with_parent_post(
+            token_mgr=token_mgr,
+            token=token,
+            model_info=model_info,
+            prompt=prompt,
+            parent_post_id=parent_post_id,
+            source_image_url=source_image_url,
+            response_format="url",
+            stream=False,
+            progress_cb=progress_cb,
+        )
+        images = result.data if isinstance(result.data, list) else []
+        if not images:
+            raise HTTPException(status_code=502, detail="Image edit returned no results")
+
+        image_url = str(images[0])
+        generated_parent_post_id = _extract_parent_post_id_from_url(image_url)
+        current_parent_post_id = generated_parent_post_id or parent_post_id
+        if current_parent_post_id:
+            await _bind_image_token(current_parent_post_id, token)
+        current_source_image_url = _resolve_source_image_url(
+            image_url=image_url,
+            parent_post_id=current_parent_post_id,
+            fallback_source_image_url=source_image_url,
+        )
+        elapsed_ms = int((time.time() - started_at) * 1000)
+        return {
+            "created": int(time.time()),
+            "data": [{"url": image_url}],
+            "parent_post_id": parent_post_id,
+            "generated_parent_post_id": generated_parent_post_id,
+            "current_parent_post_id": current_parent_post_id,
+            "current_source_image_url": current_source_image_url,
+            "elapsed_ms": elapsed_ms,
+        }
+
+    if data.stream:
+        async def event_stream():
+            queue: asyncio.Queue[dict] = asyncio.Queue()
+            disconnect_event = asyncio.Event()
+            client_disconnected = False
+
+            async def progress_cb(event: str, payload: dict):
+                item = {"event": event}
+                if isinstance(payload, dict):
+                    item.update(payload)
+                await queue.put({"type": "progress", "payload": item})
+
+            async def watch_disconnect():
+                nonlocal client_disconnected
+                while True:
+                    if await request.is_disconnected():
+                        client_disconnected = True
+                        logger.info(
+                            "Imagine edit stream interrupted by client disconnect: "
+                            f"parent_post_id={parent_post_id}"
+                        )
+                        disconnect_event.set()
+                        break
+                    await asyncio.sleep(0.2)
+
+            async def runner():
+                try:
+                    await queue.put(
+                        {
+                            "type": "progress",
+                            "payload": {
+                                "event": "request_accepted",
+                                "progress": 4,
+                                "message": "已接收编辑请求",
+                            },
+                        }
+                    )
+                    body = await _run_once(progress_cb=progress_cb)
+                    await queue.put(
+                        {
+                            "type": "progress",
+                            "payload": {
+                                "event": "completed",
+                                "progress": 100,
+                                "message": "编辑完成 100%",
+                            },
+                        }
+                    )
+                    await queue.put({"type": "result", "payload": body})
+                except asyncio.CancelledError:
+                    logger.info(
+                        "Imagine edit stream runner cancelled: "
+                        f"parent_post_id={parent_post_id}"
+                    )
+                    raise
+                except Exception as e:
+                    await queue.put(
+                        {
+                            "type": "error",
+                            "payload": {
+                                "message": str(e),
+                            },
+                        }
+                    )
+                finally:
+                    await queue.put({"type": "done", "payload": {}})
+
+            task = asyncio.create_task(runner())
+            watch_task = asyncio.create_task(watch_disconnect())
+            try:
+                while True:
+                    if disconnect_event.is_set():
+                        break
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=0.2)
+                    except asyncio.TimeoutError:
+                        continue
+                    item_type = item.get("type")
+                    if item_type == "done":
+                        break
+                    payload = item.get("payload", {})
+                    yield (
+                        f"event: {item_type}\n"
+                        f"data: {orjson.dumps(payload).decode()}\n\n"
+                    )
+            finally:
+                disconnect_event.set()
+                if not task.done():
+                    if client_disconnected:
+                        logger.info(
+                            "Imagine edit stream cancel unfinished runner task: "
+                            f"parent_post_id={parent_post_id}"
+                        )
+                    task.cancel()
+                    with contextlib.suppress(Exception):
+                        await task
+                if not watch_task.done():
+                    watch_task.cancel()
+                    with contextlib.suppress(Exception):
+                        await watch_task
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    return await _run_once(progress_cb=None)
 
 
 class ImagineStopRequest(BaseModel):
@@ -503,3 +899,236 @@ class ImagineStopRequest(BaseModel):
 async def public_imagine_stop(data: ImagineStopRequest):
     removed = await _drop_sessions(data.task_ids or [])
     return {"status": "success", "removed": removed}
+
+
+class ImagineWorkbenchEditRequest(BaseModel):
+    prompt: str
+    parent_post_id: Optional[str] = ""
+    source_image_url: Optional[str] = None
+    image_base64: Optional[str] = None
+    image_url: Optional[str] = None
+    stream: Optional[bool] = False
+
+
+@router.post("/imagine/workbench/edit", dependencies=[Depends(verify_public_key)])
+async def public_imagine_workbench_edit(data: ImagineWorkbenchEditRequest, request: Request):
+    prompt = (data.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+
+    model_id = "grok-imagine-1.0-edit"
+    model_info = ModelService.get(model_id)
+    if not model_info or not model_info.is_image_edit:
+        raise HTTPException(status_code=503, detail="Image edit model is not available")
+
+    token_mgr = await get_token_manager()
+    await token_mgr.reload_if_stale()
+
+    parent_post_id_raw = str(data.parent_post_id or "").strip()
+    use_parent_mode = bool(parent_post_id_raw)
+    parent_post_id = _validate_parent_post_id(parent_post_id_raw) if use_parent_mode else ""
+
+    token = None
+    if use_parent_mode:
+        token = await _get_bound_image_token(parent_post_id)
+        if token:
+            pool_name = token_mgr.get_pool_name_for_token(token) or "-"
+            logger.info(
+                "Imagine workbench token bound hit: "
+                f"parent_post_id={parent_post_id}, pool={pool_name}, token={_mask_token(token)}"
+            )
+
+    if not token:
+        for pool_name in ModelService.pool_candidates_for_model(model_id):
+            token = token_mgr.get_token(pool_name)
+            if token:
+                break
+    if not token:
+        raise HTTPException(
+            status_code=429,
+            detail="No available tokens. Please try again later.",
+        )
+
+    async def _run_once(progress_cb=None):
+        started_at = time.time()
+        edit_service = ImageEditService()
+        source_image_url = (data.source_image_url or "").strip()
+
+        if use_parent_mode:
+            if source_image_url and not (
+                source_image_url.startswith("http://")
+                or source_image_url.startswith("https://")
+            ):
+                raise HTTPException(
+                    status_code=400, detail="source_image_url must be http(s) URL"
+                )
+            if not source_image_url:
+                source_image_url = _build_imagine_public_url(parent_post_id)
+            result = await edit_service.edit_with_parent_post(
+                token_mgr=token_mgr,
+                token=token,
+                model_info=model_info,
+                prompt=prompt,
+                parent_post_id=parent_post_id,
+                source_image_url=source_image_url,
+                response_format="url",
+                stream=False,
+                progress_cb=progress_cb,
+            )
+            mode = "parent_post"
+        else:
+            image_input = _normalize_image_input(
+                image_base64=str(data.image_base64 or ""),
+                image_url=str(data.image_url or ""),
+            )
+            result = await edit_service.edit(
+                token_mgr=token_mgr,
+                token=token,
+                model_info=model_info,
+                prompt=prompt,
+                images=[image_input],
+                n=1,
+                response_format="url",
+                stream=False,
+                progress_cb=progress_cb,
+            )
+            mode = "upload"
+
+        images = result.data if isinstance(result.data, list) else []
+        if not images:
+            raise HTTPException(status_code=502, detail="Image edit returned no results")
+
+        image_url = str(images[0])
+        generated_parent_post_id = _extract_parent_post_id_from_url(image_url)
+        current_parent_post_id = generated_parent_post_id or parent_post_id
+        if current_parent_post_id:
+            await _bind_image_token(current_parent_post_id, token)
+        current_source_image_url = _resolve_source_image_url(
+            image_url=image_url,
+            parent_post_id=current_parent_post_id,
+            fallback_source_image_url=source_image_url,
+        )
+        elapsed_ms = int((time.time() - started_at) * 1000)
+
+        return {
+            "created": int(time.time()),
+            "data": [{"url": image_url}],
+            "mode": mode,
+            "input_parent_post_id": parent_post_id if use_parent_mode else "",
+            "generated_parent_post_id": generated_parent_post_id,
+            "current_parent_post_id": current_parent_post_id,
+            "current_source_image_url": current_source_image_url,
+            "elapsed_ms": elapsed_ms,
+        }
+
+    if data.stream:
+        async def event_stream():
+            queue: asyncio.Queue[dict] = asyncio.Queue()
+            disconnect_event = asyncio.Event()
+            client_disconnected = False
+
+            async def progress_cb(event: str, payload: dict):
+                item = {"event": event}
+                if isinstance(payload, dict):
+                    item.update(payload)
+                await queue.put({"type": "progress", "payload": item})
+
+            async def watch_disconnect():
+                nonlocal client_disconnected
+                while True:
+                    if await request.is_disconnected():
+                        client_disconnected = True
+                        logger.info(
+                            "Imagine workbench stream interrupted by client disconnect: "
+                            f"mode={'parent_post' if use_parent_mode else 'upload'}, "
+                            f"parent_post_id={parent_post_id or '-'}"
+                        )
+                        disconnect_event.set()
+                        break
+                    await asyncio.sleep(0.2)
+
+            async def runner():
+                try:
+                    await queue.put(
+                        {
+                            "type": "progress",
+                            "payload": {
+                                "event": "request_accepted",
+                                "progress": 4,
+                                "message": "已接收编辑请求",
+                            },
+                        }
+                    )
+                    body = await _run_once(progress_cb=progress_cb)
+                    await queue.put(
+                        {
+                            "type": "progress",
+                            "payload": {
+                                "event": "completed",
+                                "progress": 100,
+                                "message": "编辑完成 100%",
+                            },
+                        }
+                    )
+                    await queue.put({"type": "result", "payload": body})
+                except asyncio.CancelledError:
+                    logger.info(
+                        "Imagine workbench stream runner cancelled: "
+                        f"mode={'parent_post' if use_parent_mode else 'upload'}, "
+                        f"parent_post_id={parent_post_id or '-'}"
+                    )
+                    raise
+                except Exception as e:
+                    await queue.put(
+                        {
+                            "type": "error",
+                            "payload": {
+                                "message": str(e),
+                            },
+                        }
+                    )
+                finally:
+                    await queue.put({"type": "done", "payload": {}})
+
+            task = asyncio.create_task(runner())
+            watch_task = asyncio.create_task(watch_disconnect())
+            try:
+                while True:
+                    if disconnect_event.is_set():
+                        break
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=0.2)
+                    except asyncio.TimeoutError:
+                        continue
+                    item_type = item.get("type")
+                    if item_type == "done":
+                        break
+                    payload = item.get("payload", {})
+                    yield (
+                        f"event: {item_type}\n"
+                        f"data: {orjson.dumps(payload).decode()}\n\n"
+                    )
+            finally:
+                disconnect_event.set()
+                if not task.done():
+                    if client_disconnected:
+                        logger.info(
+                            "Imagine workbench stream cancel unfinished runner task: "
+                            f"mode={'parent_post' if use_parent_mode else 'upload'}, "
+                            f"parent_post_id={parent_post_id or '-'}"
+                        )
+                    task.cancel()
+                    with contextlib.suppress(Exception):
+                        await task
+                if not watch_task.done():
+                    watch_task.cancel()
+                    with contextlib.suppress(Exception):
+                        await watch_task
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    return await _run_once(progress_cb=None)

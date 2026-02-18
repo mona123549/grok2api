@@ -86,6 +86,7 @@ class ImagineWebSocketReverse:
                             "skip_upsampler": False,
                             "is_initial": False,
                             "aspect_ratio": aspect_ratio,
+                            "aspectRatio": aspect_ratio,
                         },
                     }
                 ],
@@ -179,6 +180,10 @@ class ImagineWebSocketReverse:
             async with conn as ws:
                 message = self._build_request_message(
                     request_id, prompt, aspect_ratio, enable_nsfw
+                )
+                logger.info(
+                    "Imagine WS request prepared: "
+                    f"request_id={request_id}, ratio={aspect_ratio}, nsfw={enable_nsfw}"
                 )
                 await ws.send_json(message)
                 logger.info(f"WebSocket request sent: {prompt[:80]}...")

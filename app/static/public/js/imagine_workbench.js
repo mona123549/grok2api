@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
   const seedImageInput = document.getElementById('seedImageInput');
   const selectSeedBtn = document.getElementById('selectSeedBtn');
   const seedFileName = document.getElementById('seedFileName');
@@ -32,6 +32,7 @@
     history: [],
     editRound: 0,
   };
+  let workbenchEditAbortController = null;
   let editProgressTimer = null;
   let editProgressHideTimer = null;
   let editProgressValue = 0;
@@ -406,7 +407,13 @@
 
   function setEditing(loading) {
     state.editing = Boolean(loading);
-    if (submitEditBtn) submitEditBtn.disabled = state.editing;
+    if (submitEditBtn) {
+      submitEditBtn.disabled = false;
+      submitEditBtn.dataset.running = state.editing ? '1' : '0';
+      submitEditBtn.textContent = state.editing ? '中止' : '执行编辑';
+      submitEditBtn.classList.toggle('is-editing', state.editing);
+      submitEditBtn.removeAttribute('aria-disabled');
+    }
     if (selectSeedBtn) selectSeedBtn.disabled = state.editing;
     if (resetCycleBtn) resetCycleBtn.disabled = state.editing;
     if (clearHistoryBtn) clearHistoryBtn.disabled = state.editing;
@@ -414,10 +421,17 @@
 
     if (state.editing) {
       setStatus('running', '编辑中...');
-      if (submitEditBtn) submitEditBtn.textContent = '编辑中...';
-    } else {
-      if (submitEditBtn) submitEditBtn.textContent = '执行编辑';
     }
+  }
+
+  function forceSubmitButtonAbortClickable() {
+    if (!submitEditBtn) return;
+    if (!state.editing) return;
+    submitEditBtn.disabled = false;
+    submitEditBtn.dataset.running = '1';
+    submitEditBtn.textContent = '中止';
+    submitEditBtn.classList.add('is-editing');
+    submitEditBtn.removeAttribute('aria-disabled');
   }
 
   function setCurrentFromEntry(entry) {
@@ -466,11 +480,11 @@
 
       const line1 = document.createElement('div');
       line1.className = 'history-line';
-      line1.innerHTML = `<strong>#${entry.round}</strong> · ${formatTime(entry.createdAt)} · ${entry.elapsedMs}ms`;
+      line1.innerHTML = `<strong>#${entry.round}</strong> 路 ${formatTime(entry.createdAt)} 路 ${entry.elapsedMs}ms`;
 
       const line2 = document.createElement('div');
       line2.className = 'history-line';
-      line2.innerHTML = `mode=<strong>${entry.mode}</strong> · parentPostId=<strong>${shortId(entry.parentPostId)}</strong>`;
+      line2.innerHTML = `mode=<strong>${entry.mode}</strong> 路 parentPostId=<strong>${shortId(entry.parentPostId)}</strong>`;
 
       const prompt = document.createElement('div');
       prompt.className = 'history-prompt';
@@ -558,7 +572,7 @@
     return text;
   }
 
-  async function requestWorkbenchEditStream(authHeader, body, onProgress) {
+  async function requestWorkbenchEditStream(authHeader, body, onProgress, signal) {
     const payload = {
       ...body,
       stream: true,
@@ -570,6 +584,7 @@
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
+      signal,
     });
 
     if (!res.ok) {
@@ -663,7 +678,12 @@
   }
 
   async function runEdit() {
-    if (state.editing) return;
+    if (state.editing) {
+      if (workbenchEditAbortController) {
+        workbenchEditAbortController.abort();
+      }
+      return;
+    }
 
     const prompt = String(editPromptInput ? editPromptInput.value : '').trim();
     if (!prompt) {
@@ -701,10 +721,13 @@
     }
 
     setEditing(true);
+    forceSubmitButtonAbortClickable();
     startEditProgress();
+    workbenchEditAbortController = new AbortController();
 
     try {
       const payload = await requestWorkbenchEditStream(authHeader, body, (evt) => {
+        forceSubmitButtonAbortClickable();
         const next = Number(evt && evt.progress ? evt.progress : 0);
         const message = String((evt && evt.message) || '').trim();
         if (Number.isFinite(next) && next > 0) {
@@ -715,7 +738,7 @@
           setEditProgress(editProgressValue, message);
           setStatus('running', message);
         }
-      });
+      }, workbenchEditAbortController ? workbenchEditAbortController.signal : undefined);
       const imageUrl = String(payload?.data?.[0]?.url || '').trim();
       if (!imageUrl) {
         throw new Error('返回结果缺少图片 URL');
@@ -777,10 +800,17 @@
       setStatus('done', `编辑完成 · round #${entry.round}`);
       toast('编辑成功，已更新当前画面', 'success');
     } catch (e) {
-      finishEditProgress(false, '编辑失败');
-      setStatus('error', '编辑失败');
-      toast(String(e.message || e), 'error');
+      if (e && e.name === 'AbortError') {
+        finishEditProgress(false, '已中止');
+        setStatus('error', '已中止');
+        toast('已中止编辑', 'warning');
+      } else {
+        finishEditProgress(false, '编辑失败');
+        setStatus('error', '编辑失败');
+        toast(String(e.message || e), 'error');
+      }
     } finally {
+      workbenchEditAbortController = null;
       setEditing(false);
     }
   }
@@ -796,7 +826,7 @@
         if (!file) return;
 
         try {
-          await applySeedImageFile(file, '本地图片');
+          await applySeedImageFile(file, '本地图像');
         } catch (e) {
           toast(String(e.message || e), 'error');
         } finally {
@@ -976,3 +1006,6 @@
 
   init();
 })();
+
+
+

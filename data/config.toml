@@ -1,22 +1,22 @@
 [app]
-app_url = "http://127.0.0.1:8000"
+app_url = "http://192.168.1.168:8000/"
 app_key = "grok2api"
-api_key = ""
+api_key = "sk-3b5b3bd501a145789e02462c351a6051"
 public_enabled = true
 public_key = ""
 image_format = "url"
 video_format = "html"
 temporary = true
 disable_memory = true
-stream = true
-thinking = true
+stream = false
+thinking = false
 dynamic_statsig = true
 filter_tags = ["xaiartifact","xai:tool_usage_card","grok:render"]
 
 [proxy]
 base_proxy_url = ""
 asset_proxy_url = ""
-cf_clearance = ""
+cf_clearance = "TZDYXNr3xjKU918mEpvp4pZ7GdWfWAeVWYdr25ZBFZk-1771200552-1.2.1.1-nBA2kDmJbeOzB4LtkWmrIRlSg8J8PgCeTS822.l9hFN6rQ7oximaVJ59rJN1eXhjuF_4qvCDQNtkHojrkNXMkP4lkHH.KvhUqB1Q7jwGFvgBPWp.ZDgHV.zYRUznVSQQnoyo9XNnyUN_wGFLOmj8rZDhV2pFXuT14E4rGO1ULTjC297..CBvH2K7fLpBAJWnzZpskPec3mX4fsnbn9ZKs3mW9YU__PkTp.TWcxINYGU"
 browser = "chrome136"
 user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
@@ -60,6 +60,10 @@ stream_timeout = 60
 
 [voice]
 timeout = 120
+livekit_url = ""
+livekit_urls = []
+signal_proxy_enabled = true
+signal_proxy_url = ""
 
 [asset]
 upload_concurrent = 30

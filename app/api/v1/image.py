@@ -193,15 +193,21 @@ def validate_edit_request(request: ImageEditRequest, images: List[UploadFile]):
             code="model_not_supported",
         )
     _validate_common_request(request, allow_ws_stream=False)
+    if request.n != 1:
+        raise ValidationException(
+            message="For image edits, n must be 1.",
+            param="n",
+            code="invalid_n",
+        )
     if not images:
         raise ValidationException(
             message="Image is required",
             param="image",
             code="missing_image",
         )
-    if len(images) > 16:
+    if len(images) > 3:
         raise ValidationException(
-            message="Too many images. Maximum is 16.",
+            message="Too many images. Maximum is 3.",
             param="image",
             code="invalid_image_count",
         )
@@ -302,7 +308,8 @@ async def create_image(request: ImageGenerationRequest):
 @router.post("/images/edits")
 async def edit_image(
     prompt: str = Form(...),
-    image: List[UploadFile] = File(...),
+    image: Optional[List[UploadFile]] = File(None),
+    image_bracket: Optional[List[UploadFile]] = File(None, alias="image[]"),
     model: Optional[str] = Form("grok-imagine-1.0-edit"),
     n: int = Form(1),
     size: str = Form("1024x1024"),
@@ -347,6 +354,13 @@ async def edit_image(
     if edit_request.stream is None:
         edit_request.stream = False
 
+    # 兼容两种多文件字段：image / image[]
+    upload_images: List[UploadFile] = []
+    if image:
+        upload_images.extend(image)
+    if image_bracket:
+        upload_images.extend(image_bracket)
+
     response_format = resolve_response_format(edit_request.response_format)
     if response_format == "base64":
         response_format = "b64_json"
@@ -354,13 +368,13 @@ async def edit_image(
     response_field = response_field_name(response_format)
 
     # 参数验证
-    validate_edit_request(edit_request, image)
+    validate_edit_request(edit_request, upload_images)
 
     max_image_bytes = 50 * 1024 * 1024
     allowed_types = {"image/png", "image/jpeg", "image/webp", "image/jpg"}
 
     images: List[str] = []
-    for item in image:
+    for item in upload_images:
         content = await item.read()
         await item.close()
         if not content:

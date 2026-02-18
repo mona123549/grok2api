@@ -1,12 +1,18 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+import asyncio
+import contextlib
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.core.auth import verify_public_key
+from app.core.logger import logger
 from app.services.grok.services.chat import ChatService
 
 router = APIRouter()
+_PROMPT_ENHANCE_TASKS: dict[str, asyncio.Task] = {}
+_PROMPT_ENHANCE_TASKS_LOCK = asyncio.Lock()
 
 
 SYSTEM_PROMPT = """你是一个智能视觉提示词增强器 + 敏感概念翻译器，专为Grok Imagine（FLUX）优化。
@@ -58,6 +64,21 @@ SYSTEM_PROMPT = """你是一个智能视觉提示词增强器 + 敏感概念翻�
 class PromptEnhanceRequest(BaseModel):
     prompt: str = Field(..., description="原始提示词")
     temperature: float = Field(0.7, ge=0, le=2)
+    request_id: Optional[str] = Field(None, description="enhance request id")
+
+
+class PromptEnhanceStopRequest(BaseModel):
+    request_id: str = Field(..., description="enhance request id")
+
+
+async def _register_prompt_enhance_task(request_id: str, task: asyncio.Task) -> None:
+    async with _PROMPT_ENHANCE_TASKS_LOCK:
+        _PROMPT_ENHANCE_TASKS[request_id] = task
+
+
+async def _pop_prompt_enhance_task(request_id: str) -> Optional[asyncio.Task]:
+    async with _PROMPT_ENHANCE_TASKS_LOCK:
+        return _PROMPT_ENHANCE_TASKS.pop(request_id, None)
 
 
 def _extract_text(result: Dict[str, Any]) -> str:
@@ -84,10 +105,15 @@ def _extract_text(result: Dict[str, Any]) -> str:
 
 
 @router.post("/prompt/enhance", dependencies=[Depends(verify_public_key)])
-async def public_prompt_enhance(data: PromptEnhanceRequest):
+async def public_prompt_enhance(data: PromptEnhanceRequest, request: Request):
     raw_prompt = (data.prompt or "").strip()
     if not raw_prompt:
         raise HTTPException(status_code=400, detail="prompt is required")
+    request_id = (
+        (data.request_id or "").strip()
+        or (request.headers.get("x-enhance-request-id") or "").strip()
+        or uuid.uuid4().hex
+    )
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -96,17 +122,76 @@ async def public_prompt_enhance(data: PromptEnhanceRequest):
             "content": f"请基于下面的原始提示词进行增强，严格遵循你的工作流程与输出格式。\n\n原始提示词：\n{raw_prompt}",
         },
     ]
-    result = await ChatService.completions(
-        model="grok-4.1-fast",
-        messages=messages,
-        stream=False,
-        temperature=float(data.temperature or 0.7),
-        top_p=0.95,
+    task = asyncio.create_task(
+        ChatService.completions(
+            model="grok-4.1-fast",
+            messages=messages,
+            stream=False,
+            temperature=float(data.temperature or 0.7),
+            top_p=0.95,
+        )
     )
+    await _register_prompt_enhance_task(request_id, task)
+    logger.info(
+        "Prompt enhance task registered: "
+        f"request_id={request_id}, prompt_len={len(raw_prompt)}"
+    )
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=0.2)
+            if done:
+                break
+            if await request.is_disconnected():
+                logger.info(
+                    "Prompt enhance interrupted by client disconnect: "
+                    f"request_id={request_id}, prompt_len={len(raw_prompt)}"
+                )
+                task.cancel()
+                raise HTTPException(status_code=499, detail="client_closed")
+        result = await task
+    except asyncio.CancelledError:
+        logger.info(
+            "Prompt enhance upstream task cancelled: "
+            f"request_id={request_id}, prompt_len={len(raw_prompt)}"
+        )
+        raise HTTPException(status_code=499, detail="client_closed")
+    finally:
+        task_ref = await _pop_prompt_enhance_task(request_id)
+        if task_ref and not task_ref.done():
+            logger.info(
+                "Prompt enhance force-cancel unfinished upstream task: "
+                f"request_id={request_id}"
+            )
+            task_ref.cancel()
+            with contextlib.suppress(Exception):
+                await task_ref
     enhanced = _extract_text(result if isinstance(result, dict) else {})
     if not enhanced:
         raise HTTPException(status_code=502, detail="upstream returned empty content")
     return {
         "enhanced_prompt": enhanced,
         "model": "grok-4.1-fast",
+        "request_id": request_id,
     }
+
+
+@router.post("/prompt/enhance/stop", dependencies=[Depends(verify_public_key)])
+async def public_prompt_enhance_stop(data: PromptEnhanceStopRequest):
+    request_id = (data.request_id or "").strip()
+    if not request_id:
+        raise HTTPException(status_code=400, detail="request_id is required")
+
+    task = await _pop_prompt_enhance_task(request_id)
+    if not task:
+        logger.info(f"Prompt enhance stop ignored: request_id={request_id}, reason=not_found")
+        return {"status": "not_found", "request_id": request_id}
+
+    if task.done():
+        logger.info(
+            f"Prompt enhance stop ignored: request_id={request_id}, reason=already_done"
+        )
+        return {"status": "already_done", "request_id": request_id}
+
+    logger.info(f"Prompt enhance stop requested: request_id={request_id}, action=cancel")
+    task.cancel()
+    return {"status": "cancelling", "request_id": request_id}

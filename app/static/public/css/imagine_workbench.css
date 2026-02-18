@@ -225,28 +225,38 @@ body {
   display: block;
   box-sizing: border-box;
   min-height: 150px;
-  padding-left: 112px;
-  padding-right: 116px;
-  padding-bottom: 44px;
+  padding-left: 12px;
+  padding-right: calc(var(--pe-action-width, 104px) + 12px);
+  padding-bottom: 82px;
+}
+
+.field .prompt-enhance-wrap > .inline-submit-btn,
+.field .prompt-enhance-wrap > .prompt-enhance-actions {
+  position: absolute;
+  right: 8px;
+  z-index: 3;
+  height: 30px;
 }
 
 .field .prompt-enhance-wrap > .inline-submit-btn {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  z-index: 3;
-  height: 30px;
-  min-width: 88px;
+  width: var(--pe-action-width, 104px);
+  min-width: var(--pe-action-width, 104px);
   padding: 0 10px;
 }
 
-.field .prompt-enhance-wrap > .prompt-enhance-btn {
-  right: 8px;
-  bottom: 8px;
+.field .prompt-enhance-wrap > .prompt-enhance-actions {
+  width: var(--pe-action-width, 104px);
+  min-width: var(--pe-action-width, 104px);
+  padding: 0;
 }
 
-.field .prompt-enhance-wrap > .prompt-lang-toggle-btn {
-  right: 66px;
+.field .prompt-enhance-wrap > .prompt-enhance-actions {
+  right: 8px;
+  bottom: 44px;
+}
+
+.field .prompt-enhance-wrap > .inline-submit-btn {
+  right: 8px;
   bottom: 8px;
 }
 
@@ -316,6 +326,35 @@ body {
   }
 }
 
+@media (max-width: 768px) {
+  .field .prompt-enhance-wrap > textarea.form-textarea {
+    padding-right: calc(var(--pe-action-width, 92px) + 12px);
+    padding-bottom: 76px;
+  }
+
+  .field .prompt-enhance-wrap > .inline-submit-btn,
+  .field .prompt-enhance-wrap > .prompt-enhance-actions {
+    height: var(--pe-action-height, 28px);
+  }
+
+  .field .prompt-enhance-wrap > .inline-submit-btn {
+    width: var(--pe-action-width, 92px);
+    min-width: var(--pe-action-width, 92px);
+    padding: 0 10px;
+  }
+
+  .field .prompt-enhance-wrap > .prompt-enhance-actions {
+    width: var(--pe-action-width, 92px);
+    min-width: var(--pe-action-width, 92px);
+    bottom: 40px;
+  }
+
+  .field .prompt-enhance-wrap > .inline-submit-btn {
+    bottom: 8px;
+  }
+
+}
+
 .empty-state {
   border: 1px dashed var(--workbench-border);
   border-radius: 10px;
@@ -379,9 +418,26 @@ body {
 .history-prompt {
   margin-top: 4px;
   font-size: 12px;
-  color: #111827;
+  color: var(--workbench-title);
   line-height: 1.5;
   word-break: break-word;
+}
+
+html[data-theme='dark'] .history-item {
+  background: #111821;
+  border-color: #324154;
+}
+
+html[data-theme='dark'] .history-line {
+  color: #b7c4d4;
+}
+
+html[data-theme='dark'] .history-line strong {
+  color: #eef4ff;
+}
+
+html[data-theme='dark'] .history-prompt {
+  color: #e8effa;
 }
 
 .history-actions {

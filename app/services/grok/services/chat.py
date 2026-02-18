@@ -503,6 +503,7 @@ class StreamProcessor(proc_base.BaseProcessor):
             yield "data: [DONE]\n\n"
         except asyncio.CancelledError:
             logger.debug("Stream cancelled by client", extra={"model": self.model})
+            raise
         except StreamIdleTimeoutError as e:
             raise UpstreamException(
                 message=f"Stream idle timeout after {e.idle_seconds}s",
@@ -644,6 +645,7 @@ class CollectProcessor(proc_base.BaseProcessor):
 
         except asyncio.CancelledError:
             logger.debug("Collect cancelled by client", extra={"model": self.model})
+            raise
         except StreamIdleTimeoutError as e:
             logger.warning(f"Collect idle timeout: {e}", extra={"model": self.model})
         except RequestsError as e:

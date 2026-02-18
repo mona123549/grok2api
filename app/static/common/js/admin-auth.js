@@ -255,18 +255,22 @@ function formatStorageLabel(type) {
 }
 
 async function updateStorageModeButton() {
-  const btn = document.getElementById('storage-mode-btn');
-  if (!btn) return;
-  btn.textContent = '...';
-  btn.title = '存储模式';
-  btn.classList.remove('storage-ready');
+  const buttons = Array.from(document.querySelectorAll('[data-storage-mode-btn]'));
+  if (!buttons.length) return;
+  buttons.forEach((btn) => {
+    btn.textContent = '...';
+    btn.title = '存储模式';
+    btn.classList.remove('storage-ready');
+  });
   const storageType = await fetchStorageType();
   const label = formatStorageLabel(storageType);
-  btn.textContent = label === '-' ? label : label.toUpperCase();
-  btn.title = '存储模式';
-  if (label !== '-') {
-    btn.classList.add('storage-ready');
-  }
+  buttons.forEach((btn) => {
+    btn.textContent = label === '-' ? label : label.toUpperCase();
+    btn.title = '存储模式';
+    if (label !== '-') {
+      btn.classList.add('storage-ready');
+    }
+  });
 }
 
 if (document.readyState === 'loading') {

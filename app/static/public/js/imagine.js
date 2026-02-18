@@ -57,6 +57,7 @@
   let editDurationEstimateMs = 14000;
   let wsPausedByEdit = false;
   let lightboxImageFullscreen = false;
+  let lightboxEditAbortController = null;
   let finalMinBytesDefault = 100000;
   const lightboxHistoryByItem = new WeakMap();
   if (lightboxEditSend) {
@@ -402,6 +403,26 @@
     }, 900);
   }
 
+  function setLightboxEditButtonState(running) {
+    if (!lightboxEditSend) return;
+    lightboxEditSend.dataset.running = running ? '1' : '0';
+    if (running) {
+      lightboxEditSend.textContent = '中止';
+      lightboxEditSend.disabled = false;
+      return;
+    }
+    lightboxEditSend.textContent = '发送编辑';
+    const currentItem = getItemByImageIndex(currentImageIndex);
+    const currentParent = currentItem ? String(currentItem.dataset.parentPostId || '').trim() : '';
+    lightboxEditSend.disabled = !currentParent;
+  }
+
+  function cancelLightboxEdit() {
+    if (lightboxEditAbortController) {
+      lightboxEditAbortController.abort();
+    }
+  }
+
   function estimateBase64Bytes(raw) {
     if (!raw) return null;
     if (raw.startsWith('http://') || raw.startsWith('https://')) {
@@ -496,7 +517,7 @@
     return await res.json();
   }
 
-  async function requestImagineEditStream(authHeader, prompt, parentPostId, sourceImageUrl, onProgress) {
+  async function requestImagineEditStream(authHeader, prompt, parentPostId, sourceImageUrl, onProgress, signal) {
     const res = await fetch('/v1/public/imagine/edit', {
       method: 'POST',
       headers: {
@@ -509,6 +530,7 @@
         source_image_url: sourceImageUrl,
         stream: true,
       }),
+      signal,
     });
 
     if (!res.ok) {
@@ -1841,7 +1863,10 @@
     renderLightboxHistory(item);
     if (lightboxEditSend) {
       const parentPostId = item ? String(item.dataset.parentPostId || '').trim() : '';
-      lightboxEditSend.disabled = !parentPostId;
+      if (String(lightboxEditSend.dataset.running || '0') !== '1') {
+        lightboxEditSend.disabled = !parentPostId;
+        lightboxEditSend.textContent = '发送编辑';
+      }
       lightboxEditSend.title = parentPostId ? '使用 parentPostId 发起编辑' : '当前图片缺少 parentPostId，无法编辑';
       if (lightboxEditInput && !lightboxEditInput.value.trim()) {
         const seedPrompt = item ? String(item.dataset.prompt || '').trim() : '';
@@ -1870,6 +1895,10 @@
   }
 
   async function startEditFromLightbox() {
+    if (lightboxEditSend && String(lightboxEditSend.dataset.running || '0') === '1') {
+      cancelLightboxEdit();
+      return;
+    }
     const item = getItemByImageIndex(currentImageIndex);
     if (!item) {
       toast('未找到当前图片', 'error');
@@ -1901,9 +1930,11 @@
       parentPostId,
       String(item.dataset.sourceImageUrl || '').trim()
     );
+    lightboxEditAbortController = new AbortController();
     if (lightboxEditSend) {
-      lightboxEditSend.disabled = true;
-      lightboxEditSend.textContent = '编辑中...';
+      lightboxEditSend.dataset.running = '1';
+      lightboxEditSend.textContent = '中止';
+      lightboxEditSend.disabled = false;
     }
     if (lightboxEditInput) {
       lightboxEditInput.disabled = true;
@@ -1925,7 +1956,8 @@
           } else if (text) {
             setEditProgress(editProgressValue, text);
           }
-        }
+        },
+        lightboxEditAbortController ? lightboxEditAbortController.signal : undefined
       );
       const list = (data && Array.isArray(data.data)) ? data.data : [];
       const first = list.length ? list[0] : null;
@@ -1996,15 +2028,19 @@
         lightboxEditInput.value = '';
       }
     } catch (e) {
+      if (e && e.name === 'AbortError') {
+        finishEditProgress(false, '已中止');
+        toast('已中止编辑', 'warning');
+        return;
+      }
       const msg = String(e && e.message ? e.message : e);
       finishEditProgress(false, '编辑失败');
       toast(`编辑失败：${msg}`, 'error');
     } finally {
+      lightboxEditAbortController = null;
       if (lightboxEditSend) {
-        lightboxEditSend.textContent = '发送编辑';
-        const currentItem = getItemByImageIndex(currentImageIndex);
-        const currentParent = currentItem ? String(currentItem.dataset.parentPostId || '').trim() : '';
-        lightboxEditSend.disabled = !currentParent;
+        lightboxEditSend.dataset.running = '0';
+        setLightboxEditButtonState(false);
       }
       if (lightboxEditInput) {
         lightboxEditInput.disabled = false;
@@ -2015,6 +2051,7 @@
   if (lightbox && closeLightbox) {
     closeLightbox.addEventListener('click', (e) => {
       e.stopPropagation();
+      cancelLightboxEdit();
       setLightboxImageFullscreen(false);
       lightbox.classList.remove('active');
       setLightboxKeyboardShift(0);
@@ -2033,6 +2070,7 @@
     });
 
     lightbox.addEventListener('click', () => {
+      cancelLightboxEdit();
       setLightboxImageFullscreen(false);
       lightbox.classList.remove('active');
       setLightboxKeyboardShift(0);
@@ -2061,6 +2099,10 @@
     if (lightboxEditSend) {
       lightboxEditSend.addEventListener('click', async (e) => {
         e.stopPropagation();
+        if (String(lightboxEditSend.dataset.running || '0') === '1') {
+          cancelLightboxEdit();
+          return;
+        }
         await startEditFromLightbox();
       });
     }
@@ -2113,6 +2155,7 @@
           setLightboxImageFullscreen(false);
           return;
         }
+        cancelLightboxEdit();
         lightbox.classList.remove('active');
         setLightboxKeyboardShift(0);
         currentImageIndex = -1;

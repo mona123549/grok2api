@@ -2,7 +2,6 @@
 Reverse interface: media post create.
 """
 
-import orjson
 from typing import Any
 from curl_cffi.requests import AsyncSession
 
@@ -14,8 +13,6 @@ from app.services.reverse.utils.headers import build_headers
 from app.services.reverse.utils.retry import retry_on_status
 
 MEDIA_POST_API = "https://grok.com/rest/media/post/create"
-
-
 class MediaPostReverse:
     """/rest/media/post/create reverse interface."""
 
@@ -57,6 +54,10 @@ class MediaPostReverse:
                 payload["mediaUrl"] = mediaUrl
             if prompt:
                 payload["prompt"] = prompt
+            logger.info(
+                "MediaPost request prepared: "
+                f"mediaType={mediaType}, has_media_url={bool(mediaUrl)}, prompt_len={len(prompt or '')}"
+            )
 
             # Curl Config
             timeout = get_config("video.timeout")
@@ -66,7 +67,7 @@ class MediaPostReverse:
                 response = await session.post(
                     MEDIA_POST_API,
                     headers=headers,
-                    data=orjson.dumps(payload),
+                    json=payload,
                     timeout=timeout,
                     proxies=proxies,
                     impersonate=browser,

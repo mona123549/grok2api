@@ -55,6 +55,10 @@ class AssetsUploadReverse:
                 "fileMimeType": fileMimeType,
                 "content": content,
             }
+            logger.info(
+                "AssetsUpload request prepared: "
+                f"fileName={fileName}, fileMimeType={fileMimeType}, content_len={len(content or '')}"
+            )
 
             # Curl Config
             timeout = get_config("asset.upload_timeout")

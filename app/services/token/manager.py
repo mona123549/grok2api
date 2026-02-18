@@ -38,6 +38,15 @@ def _default_quota_for_pool(pool_name: str) -> int:
     return BASIC__DEFAULT_QUOTA
 
 
+def _token_tag(token: str) -> str:
+    raw = token[4:] if token.startswith("sso=") else token
+    if not raw:
+        return "empty"
+    if len(raw) <= 14:
+        return raw
+    return f"{raw[:6]}...{raw[-6:]}"
+
+
 class TokenManager:
     """管理 Token 的增删改查和配额同步"""
 
@@ -211,7 +220,9 @@ class TokenManager:
             return token[4:]
         return token
 
-    def get_token_info(self, pool_name: str = "ssoBasic") -> Optional["TokenInfo"]:
+    def get_token_info(
+        self, pool_name: str = "ssoBasic", exclude: set | None = None
+    ) -> Optional["TokenInfo"]:
         """
         获取可用 Token 的完整信息
 
@@ -226,7 +237,7 @@ class TokenManager:
             logger.warning(f"Pool '{pool_name}' not found")
             return None
 
-        token_info = pool.select()
+        token_info = pool.select(exclude=exclude)
         if not token_info:
             logger.warning(f"No available token in pool '{pool_name}'")
             return None
@@ -238,6 +249,7 @@ class TokenManager:
         resolution: str = "480p",
         video_length: int = 6,
         pool_candidates: Optional[List[str]] = None,
+        exclude: Optional[set[str]] = None,
     ) -> Optional["TokenInfo"]:
         """
         根据视频需求智能选择 Token 池
@@ -269,17 +281,17 @@ class TokenManager:
             ordered_pools = [primary_pool, fallback_pool]
 
         for idx, pool_name in enumerate(ordered_pools):
-            token_info = self.get_token_info(pool_name)
+            token_info = self.get_token_info(pool_name, exclude=exclude)
             if token_info:
                 if idx == 0:
                     logger.info(
                         f"Video token routing: resolution={resolution}, length={video_length}s -> "
-                        f"pool={pool_name} (token={token_info.token[:10]}...)"
+                        f"pool={pool_name} (token={_token_tag(token_info.token)})"
                     )
                 else:
                     logger.info(
                         f"Video token routing: fallback from {ordered_pools[0]} -> {pool_name} "
-                        f"(token={token_info.token[:10]}...)"
+                        f"(token={_token_tag(token_info.token)})"
                     )
                 return token_info
 

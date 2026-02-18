@@ -142,6 +142,7 @@
   }
 
   function lockWorkspacePreviewSize(force = false) {
+    if (window.innerWidth < 640) return; // Disable on mobile to allow fluid width
     if (!editPreviewWrap || !editVideo) return;
     if (!shouldLockWorkspacePreviewSize()) {
       editPreviewWrap.style.removeProperty('width');

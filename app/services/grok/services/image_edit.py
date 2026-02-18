@@ -6,7 +6,7 @@ import asyncio
 import random
 import re
 from dataclasses import dataclass
-from typing import AsyncGenerator, AsyncIterable, List, Union, Any
+from typing import AsyncGenerator, AsyncIterable, List, Union, Any, Callable
 
 import orjson
 from curl_cffi.requests.errors import RequestsError
@@ -43,6 +43,26 @@ class ImageEditResult:
 class ImageEditService:
     """Image edit orchestration service."""
 
+    async def _emit_progress(
+        self,
+        progress_cb: Callable[[str, dict], Any] | None,
+        event: str,
+        progress: int,
+        message: str,
+        **extra: Any,
+    ) -> None:
+        if not progress_cb:
+            return
+        payload = {"progress": int(progress), "message": message}
+        if extra:
+            payload.update(extra)
+        try:
+            result = progress_cb(event, payload)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as e:
+            logger.debug(f"Image edit progress callback ignored: {e}")
+
     async def edit(
         self,
         *,
@@ -54,6 +74,7 @@ class ImageEditService:
         n: int,
         response_format: str,
         stream: bool,
+        progress_cb: Callable[[str, dict], Any] | None = None,
     ) -> ImageEditResult:
         max_token_retries = int(get_config("retry.max_retry"))
         tried_tokens: set[str] = set()
@@ -75,10 +96,42 @@ class ImageEditService:
                 )
 
             tried_tokens.add(current_token)
+            await self._emit_progress(
+                progress_cb,
+                "token_selected",
+                8,
+                "已匹配编辑令牌",
+            )
             try:
+                await self._emit_progress(
+                    progress_cb,
+                    "upload_start",
+                    16,
+                    "正在上传输入图片",
+                )
                 image_urls = await self._upload_images(images, current_token)
+                await self._emit_progress(
+                    progress_cb,
+                    "upload_done",
+                    30,
+                    f"图片上传完成，共 {len(image_urls)} 张",
+                    count=len(image_urls),
+                )
+                await self._emit_progress(
+                    progress_cb,
+                    "pre_create_start",
+                    36,
+                    "正在创建媒体帖子",
+                )
                 parent_post_id = await self._get_parent_post_id(
                     current_token, image_urls
+                )
+                await self._emit_progress(
+                    progress_cb,
+                    "pre_create_done",
+                    42,
+                    "媒体帖子创建完成",
+                    parent_post_id=parent_post_id or "",
                 )
 
                 model_config_override = {
@@ -105,6 +158,7 @@ class ImageEditService:
                         stream=True,
                         tool_overrides=tool_overrides,
                         model_config_override=model_config_override,
+                        image_generation_count=1,
                     )
                     processor = ImageStreamProcessor(
                         model_info.model_id,
@@ -122,14 +176,27 @@ class ImageEditService:
                         ),
                     )
 
+                await self._emit_progress(
+                    progress_cb,
+                    "chat_request_start",
+                    48,
+                    "已提交编辑请求",
+                    parent_post_id=parent_post_id or "",
+                )
                 images_out = await self._collect_images(
                     token=current_token,
                     prompt=prompt,
                     model_info=model_info,
-                    n=n,
                     response_format=response_format,
                     tool_overrides=tool_overrides,
                     model_config_override=model_config_override,
+                    progress_cb=progress_cb,
+                )
+                await self._emit_progress(
+                    progress_cb,
+                    "collect_done",
+                    92,
+                    f"已收到 {len(images_out)} 张结果",
                 )
                 try:
                     effort = (
@@ -149,6 +216,199 @@ class ImageEditService:
                 last_error = e
                 if rate_limited(e):
                     await token_mgr.mark_rate_limited(current_token)
+                    await self._emit_progress(
+                        progress_cb,
+                        "rate_limited",
+                        16,
+                        "令牌限流，正在切换重试",
+                    )
+                    logger.warning(
+                        f"Token {current_token[:10]}... rate limited (429), "
+                        f"trying next token (attempt {attempt + 1}/{max_token_retries})"
+                    )
+                    continue
+                raise
+
+        if last_error:
+            raise last_error
+        raise AppException(
+            message="No available tokens. Please try again later.",
+            error_type=ErrorType.RATE_LIMIT.value,
+            code="rate_limit_exceeded",
+            status_code=429,
+        )
+
+    async def edit_with_parent_post(
+        self,
+        *,
+        token_mgr: Any,
+        token: str,
+        model_info: Any,
+        prompt: str,
+        parent_post_id: str,
+        source_image_url: str,
+        response_format: str,
+        stream: bool,
+        progress_cb: Callable[[str, dict], Any] | None = None,
+    ) -> ImageEditResult:
+        """基于 parentPostId 进行编辑，不上传图片。"""
+        max_token_retries = int(get_config("retry.max_retry"))
+        tried_tokens: set[str] = set()
+        last_error: Exception | None = None
+
+        for attempt in range(max_token_retries):
+            preferred = token if attempt == 0 else None
+            current_token = await pick_token(
+                token_mgr, model_info.model_id, tried_tokens, preferred=preferred
+            )
+            if not current_token:
+                if last_error:
+                    raise last_error
+                raise AppException(
+                    message="No available tokens. Please try again later.",
+                    error_type=ErrorType.RATE_LIMIT.value,
+                    code="rate_limit_exceeded",
+                    status_code=429,
+                )
+
+            tried_tokens.add(current_token)
+            await self._emit_progress(
+                progress_cb,
+                "token_selected",
+                8,
+                "已匹配编辑令牌",
+            )
+            try:
+                image_ref = (source_image_url or "").strip()
+                if not image_ref:
+                    image_ref = (
+                        f"https://imagine-public.x.ai/imagine-public/images/{parent_post_id}.jpg"
+                    )
+                effective_parent_post_id = parent_post_id
+                await self._emit_progress(
+                    progress_cb,
+                    "pre_create_start",
+                    18,
+                    "正在创建媒体帖子",
+                    parent_post_id=parent_post_id,
+                )
+                try:
+                    # 与 nsfw 的 parentPostId 链路保持一致：先预创建 media post
+                    # 这样上游在 imagine-image-edit 校验 parentPostId 时更稳定。
+                    image_post_id = await VideoService().create_image_post(
+                        current_token, image_ref
+                    )
+                    if image_post_id:
+                        effective_parent_post_id = image_post_id
+                    logger.info(
+                        "Image edit(parentPostId) pre-create media post done: "
+                        f"parent_post_id={parent_post_id}, "
+                        f"image_post_id={effective_parent_post_id}, media_url={image_ref}"
+                    )
+                    await self._emit_progress(
+                        progress_cb,
+                        "pre_create_done",
+                        34,
+                        "媒体帖子创建完成",
+                        image_post_id=effective_parent_post_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Image edit(parentPostId) pre-create media post failed, continue anyway: "
+                        f"parent_post_id={parent_post_id}, media_url={image_ref}, error={e}"
+                    )
+                    await self._emit_progress(
+                        progress_cb,
+                        "pre_create_failed",
+                        28,
+                        "媒体帖子创建失败，继续请求",
+                    )
+
+                model_config_override = {
+                    "modelMap": {
+                        "imageEditModel": "imagine",
+                        "imageEditModelConfig": {
+                            "imageReferences": [image_ref],
+                            "parentPostId": effective_parent_post_id,
+                        },
+                    }
+                }
+                tool_overrides = {"imageGen": True}
+
+                if stream:
+                    response = await GrokChatService().chat(
+                        token=current_token,
+                        message=prompt,
+                        model=model_info.grok_model,
+                        mode=None,
+                        stream=True,
+                        tool_overrides=tool_overrides,
+                        model_config_override=model_config_override,
+                        image_generation_count=1,
+                    )
+                    processor = ImageStreamProcessor(
+                        model_info.model_id,
+                        current_token,
+                        n=1,
+                        response_format=response_format,
+                    )
+                    return ImageEditResult(
+                        stream=True,
+                        data=wrap_stream_with_usage(
+                            processor.process(response),
+                            token_mgr,
+                            current_token,
+                            model_info.model_id,
+                        ),
+                    )
+
+                await self._emit_progress(
+                    progress_cb,
+                    "chat_request_start",
+                    48,
+                    "已提交编辑请求",
+                    parent_post_id=effective_parent_post_id,
+                )
+                images_out = await self._collect_images(
+                    token=current_token,
+                    prompt=prompt,
+                    model_info=model_info,
+                    response_format=response_format,
+                    tool_overrides=tool_overrides,
+                    model_config_override=model_config_override,
+                    progress_cb=progress_cb,
+                )
+                await self._emit_progress(
+                    progress_cb,
+                    "collect_done",
+                    92,
+                    f"已收到 {len(images_out)} 张结果",
+                )
+                try:
+                    effort = (
+                        EffortType.HIGH
+                        if (model_info and model_info.cost.value == "high")
+                        else EffortType.LOW
+                    )
+                    await token_mgr.consume(current_token, effort)
+                    logger.debug(
+                        "Image edit(parentPostId) completed, "
+                        f"recorded usage (effort={effort.value})"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record image edit(parentPostId) usage: {e}")
+                return ImageEditResult(stream=False, data=images_out)
+
+            except UpstreamException as e:
+                last_error = e
+                if rate_limited(e):
+                    await token_mgr.mark_rate_limited(current_token)
+                    await self._emit_progress(
+                        progress_cb,
+                        "rate_limited",
+                        16,
+                        "令牌限流，正在切换重试",
+                    )
                     logger.warning(
                         f"Token {current_token[:10]}... rate limited (429), "
                         f"trying next token (attempt {attempt + 1}/{max_token_retries})"
@@ -222,13 +482,11 @@ class ImageEditService:
         token: str,
         prompt: str,
         model_info: Any,
-        n: int,
         response_format: str,
         tool_overrides: dict,
         model_config_override: dict,
+        progress_cb: Callable[[str, dict], Any] | None = None,
     ) -> List[str]:
-        calls_needed = (n + 1) // 2
-
         async def _call_edit():
             response = await GrokChatService().chat(
                 token=token,
@@ -238,47 +496,23 @@ class ImageEditService:
                 stream=True,
                 tool_overrides=tool_overrides,
                 model_config_override=model_config_override,
+                image_generation_count=1,
             )
             processor = ImageCollectProcessor(
-                model_info.model_id, token, response_format=response_format
+                model_info.model_id,
+                token,
+                response_format=response_format,
+                progress_cb=progress_cb,
             )
             return await processor.process(response)
 
-        last_error: Exception | None = None
-        rate_limit_error: Exception | None = None
-
-        if calls_needed == 1:
-            all_images = await _call_edit()
-        else:
-            tasks = [_call_edit() for _ in range(calls_needed)]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            all_images: List[str] = []
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.error(f"Concurrent call failed: {result}")
-                    last_error = result
-                    if rate_limited(result):
-                        rate_limit_error = result
-                elif isinstance(result, list):
-                    all_images.extend(result)
+        all_images = await _call_edit()
 
         if not all_images:
-            if rate_limit_error:
-                raise rate_limit_error
-            if last_error:
-                raise last_error
             raise UpstreamException(
                 "Image edit returned no results", details={"error": "empty_result"}
             )
-
-        if len(all_images) >= n:
-            return all_images[:n]
-
-        selected_images = all_images.copy()
-        while len(selected_images) < n:
-            selected_images.append("error")
-        return selected_images
+        return [all_images[0]]
 
 
 class ImageStreamProcessor(BaseProcessor):
@@ -436,16 +670,39 @@ class ImageStreamProcessor(BaseProcessor):
 class ImageCollectProcessor(BaseProcessor):
     """HTTP image non-stream processor."""
 
-    def __init__(self, model: str, token: str = "", response_format: str = "b64_json"):
+    def __init__(
+        self,
+        model: str,
+        token: str = "",
+        response_format: str = "b64_json",
+        progress_cb: Callable[[str, dict], Any] | None = None,
+    ):
         if response_format == "base64":
             response_format = "b64_json"
         super().__init__(model, token)
         self.response_format = response_format
+        self.progress_cb = progress_cb
+
+    async def _emit_progress(
+        self, event: str, progress: int, message: str, **extra: Any
+    ) -> None:
+        if not self.progress_cb:
+            return
+        payload = {"progress": int(progress), "message": message}
+        if extra:
+            payload.update(extra)
+        try:
+            result = self.progress_cb(event, payload)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            pass
 
     async def process(self, response: AsyncIterable[bytes]) -> List[str]:
         """Process and collect images."""
         images = []
         idle_timeout = get_config("image.stream_timeout")
+        chat_connected_emitted = False
 
         try:
             async for line in _with_idle_timeout(response, idle_timeout, self.model):
@@ -458,6 +715,13 @@ class ImageCollectProcessor(BaseProcessor):
                     continue
 
                 resp = data.get("result", {}).get("response", {})
+                if not chat_connected_emitted and resp:
+                    chat_connected_emitted = True
+                    await self._emit_progress(
+                        "chat_connected",
+                        60,
+                        "模型连接成功，正在生成图片",
+                    )
 
                 if mr := resp.get("modelResponse"):
                     if urls := _collect_images(mr):
@@ -466,6 +730,13 @@ class ImageCollectProcessor(BaseProcessor):
                                 processed = await self.process_url(url, "image")
                                 if processed:
                                     images.append(processed)
+                                    progress = min(90, 64 + len(images) * 12)
+                                    await self._emit_progress(
+                                        "image_downloaded",
+                                        progress,
+                                        f"已下载第 {len(images)} 张图片",
+                                        count=len(images),
+                                    )
                                 continue
                             try:
                                 dl_service = self._get_dl()
@@ -478,6 +749,13 @@ class ImageCollectProcessor(BaseProcessor):
                                     else:
                                         b64 = base64_data
                                     images.append(b64)
+                                    progress = min(90, 64 + len(images) * 12)
+                                    await self._emit_progress(
+                                        "image_downloaded",
+                                        progress,
+                                        f"已下载第 {len(images)} 张图片",
+                                        count=len(images),
+                                    )
                             except Exception as e:
                                 logger.warning(
                                     f"Failed to convert image to base64, falling back to URL: {e}"
@@ -485,6 +763,13 @@ class ImageCollectProcessor(BaseProcessor):
                                 processed = await self.process_url(url, "image")
                                 if processed:
                                     images.append(processed)
+                                    progress = min(90, 64 + len(images) * 12)
+                                    await self._emit_progress(
+                                        "image_downloaded",
+                                        progress,
+                                        f"已下载第 {len(images)} 张图片",
+                                        count=len(images),
+                                    )
 
         except asyncio.CancelledError:
             logger.debug("Image collect cancelled by client")

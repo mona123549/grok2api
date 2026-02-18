@@ -10,6 +10,12 @@
   overflow: hidden;
 }
 
+@supports (min-height: 100dvh) {
+  .login-body {
+    min-height: 100dvh;
+  }
+}
+
 .login-bg {
   position: fixed;
   inset: 0;
@@ -96,4 +102,21 @@
   height: 32px;
   font-size: 12px;
   justify-content: center;
+}
+
+@media (max-width: 900px) {
+  .login-shell {
+    width: min(460px, 100vw);
+    padding: 16px;
+  }
+
+  .login-card {
+    padding: 18px;
+  }
+
+  .login-input,
+  .login-button {
+    height: 42px;
+    font-size: 16px;
+  }
 }

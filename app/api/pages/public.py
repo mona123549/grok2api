@@ -42,3 +42,37 @@ async def public_video():
     if not is_public_enabled():
         raise HTTPException(status_code=404, detail="Not Found")
     return FileResponse(STATIC_DIR / "public/pages/video.html")
+
+
+@router.get("/nsfw", include_in_schema=False)
+async def public_nsfw():
+    if not is_public_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(STATIC_DIR / "public/pages/nsfw.html")
+
+
+@router.get("/imagine-workbench", include_in_schema=False)
+async def public_imagine_workbench():
+    if not is_public_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(STATIC_DIR / "public/pages/imagine_workbench.html")
+
+
+@router.get("/manifest.webmanifest", include_in_schema=False)
+async def public_manifest():
+    if not is_public_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(
+        STATIC_DIR / "public/manifest.webmanifest",
+        media_type="application/manifest+json",
+    )
+
+
+@router.get("/sw.js", include_in_schema=False)
+async def public_service_worker():
+    if not is_public_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(
+        STATIC_DIR / "public/sw.js",
+        media_type="application/javascript",
+    )

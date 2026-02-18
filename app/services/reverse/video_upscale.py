@@ -2,7 +2,6 @@
 Reverse interface: video upscale.
 """
 
-import orjson
 from typing import Any
 from curl_cffi.requests import AsyncSession
 
@@ -14,8 +13,6 @@ from app.services.reverse.utils.headers import build_headers
 from app.services.reverse.utils.retry import retry_on_status
 
 VIDEO_UPSCALE_API = "https://grok.com/rest/media/video/upscale"
-
-
 class VideoUpscaleReverse:
     """/rest/media/video/upscale reverse interface."""
 
@@ -46,6 +43,7 @@ class VideoUpscaleReverse:
 
             # Build payload
             payload = {"videoId": video_id}
+            logger.info(f"VideoUpscale request prepared: video_id={video_id}")
 
             # Curl Config
             timeout = get_config("video.timeout")
@@ -55,7 +53,7 @@ class VideoUpscaleReverse:
                 response = await session.post(
                     VIDEO_UPSCALE_API,
                     headers=headers,
-                    data=orjson.dumps(payload),
+                    json=payload,
                     timeout=timeout,
                     proxies=proxies,
                     impersonate=browser,

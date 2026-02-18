@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
   const imagePromptInput = document.getElementById('imagePromptInput');
   const videoPromptInput = document.getElementById('videoPromptInput');
   const ratioSelect = document.getElementById('ratioSelect');
@@ -64,6 +64,7 @@
     editDurationEstimateMs: 14000,
     imageFullscreen: false,
   };
+  let lightboxEditAbortController = null;
   if (lightboxEditSend) {
     lightboxEditSend.disabled = true;
   }
@@ -143,15 +144,28 @@
     }
   }
 
+  function setToggleButtonState(button, running, runningText) {
+    if (!button) return;
+    if (!button.dataset.defaultText) {
+      button.dataset.defaultText = String(button.textContent || '').trim() || '';
+    }
+    button.dataset.running = running ? '1' : '0';
+    button.textContent = running ? runningText : (button.dataset.defaultText || button.textContent);
+  }
+
   function updateImageButtons() {
-    if (generateBatchBtn) generateBatchBtn.disabled = state.imageRunning;
+    const running = state.imageRunning;
+    setToggleButtonState(generateBatchBtn, running, '中止');
+    if (generateBatchBtn) generateBatchBtn.disabled = false;
     if (nextBatchBtn) nextBatchBtn.disabled = state.imageRunning;
     if (stopBatchBtn) stopBatchBtn.disabled = !state.imageRunning;
   }
 
   function updateVideoButtons() {
     const hasSelected = Boolean(getSelectedCandidate());
-    if (startVideoBtn) startVideoBtn.disabled = state.videoRunning || !hasSelected;
+    const running = state.videoRunning;
+    setToggleButtonState(startVideoBtn, running, '中止');
+    if (startVideoBtn) startVideoBtn.disabled = running ? false : !hasSelected;
     if (stopVideoBtn) stopVideoBtn.disabled = !state.videoRunning;
   }
 
@@ -317,7 +331,7 @@
     }
   }
 
-  async function requestImagineEditStream(authHeader, prompt, parentPostId, sourceImageUrl, onProgress) {
+  async function requestImagineEditStream(authHeader, prompt, parentPostId, sourceImageUrl, onProgress, signal) {
     const res = await fetch('/v1/public/imagine/edit', {
       method: 'POST',
       headers: {
@@ -330,6 +344,7 @@
         source_image_url: sourceImageUrl,
         stream: true,
       }),
+      signal,
     });
 
     if (!res.ok) {
@@ -577,6 +592,26 @@
     }, 900);
   }
 
+  function setLightboxEditButtonState(running) {
+    if (!lightboxEditSend) return;
+    lightboxEditSend.dataset.running = running ? '1' : '0';
+    if (running) {
+      lightboxEditSend.textContent = '中止';
+      lightboxEditSend.disabled = false;
+      return;
+    }
+    lightboxEditSend.textContent = '发送编辑';
+    const current = getCurrentLightboxCandidate();
+    const currentParent = current ? String(current.parentPostId || '').trim() : '';
+    lightboxEditSend.disabled = !currentParent;
+  }
+
+  function cancelLightboxEdit() {
+    if (lightboxEditAbortController) {
+      lightboxEditAbortController.abort();
+    }
+  }
+
   function renderLightboxHistory(candidate) {
     if (!lightboxHistoryCount || !lightboxHistoryEmpty || !lightboxHistoryList) return;
     lightboxHistoryList.innerHTML = '';
@@ -707,7 +742,9 @@
     if (lightboxNext) lightboxNext.disabled = (index === state.candidates.length - 1);
     if (lightboxEditSend) {
       const parentPostId = String(candidate.parentPostId || '').trim();
-      lightboxEditSend.disabled = !parentPostId;
+      if (String(lightboxEditSend.dataset.running || '0') !== '1') {
+        setLightboxEditButtonState(false);
+      }
       lightboxEditSend.title = parentPostId ? '使用 parentPostId 发起编辑' : '当前图片缺少 parentPostId，无法编辑';
       if (lightboxEditInput && !lightboxEditInput.value.trim()) {
         const seedPrompt = String(candidate.prompt || '').trim();
@@ -732,11 +769,13 @@
 
   function closeLightboxView() {
     if (!lightbox) return;
+    cancelLightboxEdit();
     setLightboxImageFullscreen(false);
     lightbox.classList.remove('active');
     setLightboxKeyboardShift(0);
     state.lightboxIndex = -1;
     if (lightboxEditSend) {
+      lightboxEditSend.dataset.running = '0';
       lightboxEditSend.textContent = '发送编辑';
       lightboxEditSend.disabled = true;
     }
@@ -789,10 +828,8 @@
       [candidate.sourceImageUrl, candidate.imageUrl],
       parentPostId
     );
-    if (lightboxEditSend) {
-      lightboxEditSend.disabled = true;
-      lightboxEditSend.textContent = '编辑中...';
-    }
+    lightboxEditAbortController = new AbortController();
+    setLightboxEditButtonState(true);
     if (lightboxEditInput) {
       lightboxEditInput.disabled = true;
     }
@@ -814,7 +851,8 @@
           } else if (text) {
             setEditProgress(state.editProgressValue, text);
           }
-        }
+        },
+        lightboxEditAbortController ? lightboxEditAbortController.signal : undefined
       );
       const list = (data && Array.isArray(data.data)) ? data.data : [];
       const first = list.length ? list[0] : null;
@@ -878,16 +916,17 @@
         lightboxEditInput.value = '';
       }
     } catch (e) {
+      if (e && e.name === 'AbortError') {
+        finishEditProgress(false, '已中止');
+        toast('已中止编辑', 'warning');
+        return;
+      }
       const msg = String(e && e.message ? e.message : e);
       finishEditProgress(false, '编辑失败');
       toast(`编辑失败：${msg}`, 'error');
     } finally {
-      if (lightboxEditSend) {
-        lightboxEditSend.textContent = '发送编辑';
-        const current = getCurrentLightboxCandidate();
-        const currentParent = current ? String(current.parentPostId || '').trim() : '';
-        lightboxEditSend.disabled = !currentParent;
-      }
+      lightboxEditAbortController = null;
+      setLightboxEditButtonState(false);
       if (lightboxEditInput) {
         lightboxEditInput.disabled = false;
       }
@@ -1628,6 +1667,10 @@
 
   if (generateBatchBtn) {
     generateBatchBtn.addEventListener('click', () => {
+      if (String(generateBatchBtn.dataset.running || '0') === '1') {
+        stopImageBatch(false);
+        return;
+      }
       startImageBatch();
     });
   }
@@ -1649,6 +1692,10 @@
 
   if (startVideoBtn) {
     startVideoBtn.addEventListener('click', () => {
+      if (String(startVideoBtn.dataset.running || '0') === '1') {
+        stopVideos(false);
+        return;
+      }
       startVideos();
     });
   }
@@ -1701,6 +1748,10 @@
   if (lightboxEditSend) {
     lightboxEditSend.addEventListener('click', async (e) => {
       e.stopPropagation();
+      if (String(lightboxEditSend.dataset.running || '0') === '1') {
+        cancelLightboxEdit();
+        return;
+      }
       await startEditFromLightbox();
     });
   }

@@ -249,3 +249,11 @@ body {
   border-radius: 999px;
   background: #111;
 }
+
+@media (max-width: 900px) {
+  .voice-actions,
+  #clearLogBtn,
+  #copyLogBtn {
+    display: none !important;
+  }
+}
