@@ -60,3 +60,5 @@ htmlcov/
 # Project specific
 config.local.toml
 data/config.toml
+
+vibe/
