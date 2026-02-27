@@ -390,12 +390,61 @@ function addToken() {
   openEditModal(-1);
 }
 
-// Batch export (Selected only)
+/* Batch export (Selected only) */
 function batchExport() {
   const selected = getSelectedTokens();
   if (selected.length === 0) return showToast("未选择 Token", 'error');
   const content = selected.map(t => t.token).join('\n') + '\n';
   downloadTextFile(content, `tokens_export_selected_${new Date().toISOString().slice(0, 10)}.txt`);
+}
+
+/**
+ * 应急恢复：将选中的 token 配额恢复为默认值（并可将 cooling 置为 active）
+ * - includeActive=false：仅对 cooling 生效
+ * - includeActive=true：对 cooling + active 生效
+ *
+ * 注意：这里只是“手动改本地 token.json（storage）”，不会影响 /refresh 的上游同步语义。
+ */
+async function batchRecoverQuota(includeActive = false) {
+  if (isBatchProcessing) {
+    showToast('当前有任务进行中', 'info');
+    return;
+  }
+
+  const selected = getSelectedTokens();
+  if (selected.length === 0) {
+    showToast('未选择 Token', 'error');
+    return;
+  }
+
+  const targets = selected.filter(t => {
+    if (includeActive) return t.status === 'cooling' || t.status === 'active';
+    return t.status === 'cooling';
+  });
+
+  if (targets.length === 0) {
+    showToast(includeActive ? '选中的 Token 中没有 active/cooling' : '选中的 Token 中没有 cooling', 'info');
+    return;
+  }
+
+  const ok = await confirmAction(
+    includeActive
+      ? `确定要恢复选中的 ${targets.length} 个 Token 的默认额度吗？（cooling 会被置为 active）`
+      : `确定要恢复选中的 ${targets.length} 个 cooling Token 的默认额度并置为 active 吗？`,
+    { okText: '恢复' }
+  );
+  if (!ok) return;
+
+  for (const t of targets) {
+    t.quota = getDefaultQuotaForPool(t.pool);
+    if (t.status === 'cooling') {
+      t.status = 'active';
+    }
+  }
+
+  await syncToServer();
+  showToast(`已恢复 ${targets.length} 个 Token 的额度`, 'success');
+  loadData();
 }
 
 
@@ -818,11 +867,17 @@ function setActionButtonsState(selectedCount = null) {
   const exportBtn = byId('btn-batch-export');
   const updateBtn = byId('btn-batch-update');
   const nsfwBtn = byId('btn-batch-nsfw');
+  const recoverCoolingBtn = byId('btn-batch-recover-cooling');
+  const recoverAllBtn = byId('btn-batch-recover-all');
   const deleteBtn = byId('btn-batch-delete');
-  if (exportBtn) exportBtn.disabled = disabled || count === 0;
-  if (updateBtn) updateBtn.disabled = disabled || count === 0;
-  if (nsfwBtn) nsfwBtn.disabled = disabled || count === 0;
-  if (deleteBtn) deleteBtn.disabled = disabled || count === 0;
+
+  const shouldDisable = disabled || count === 0;
+  if (exportBtn) exportBtn.disabled = shouldDisable;
+  if (updateBtn) updateBtn.disabled = shouldDisable;
+  if (nsfwBtn) nsfwBtn.disabled = shouldDisable;
+  if (recoverCoolingBtn) recoverCoolingBtn.disabled = shouldDisable;
+  if (recoverAllBtn) recoverAllBtn.disabled = shouldDisable;
+  if (deleteBtn) deleteBtn.disabled = shouldDisable;
 }
 
 async function startBatchDelete() {

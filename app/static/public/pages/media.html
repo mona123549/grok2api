@@ -1,0 +1,133 @@
+<![CDATA[
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content">
+  <title>Grok2API - Media 媒体页</title>
+  <link rel="icon" href="/static/common/img/favicon/favicon.ico">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#fafafa">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Grok2API">
+  <link rel="apple-touch-icon" href="/static/public/pwa/apple-touch-icon.png">
+
+  <script src="/static/vendor/tailwind/tailwindcss-cdn.js"></script>
+  <link href="/static/vendor/geist/geist-sans.css" rel="stylesheet">
+  <link href="/static/vendor/geist/geist-mono.css" rel="stylesheet">
+  <script src="/static/common/js/theme.js?v=0.1.0"></script>
+
+  <link href="/static/common/css/common.css?v=0.3.8" rel="stylesheet">
+  <link href="/static/public/css/media.css?v=0.1.0" rel="stylesheet">
+  <link href="/static/common/css/toast.css" rel="stylesheet">
+</head>
+
+<body class="public-page min-h-screen flex flex-col" style="background-color: var(--bg);">
+  <div id="toast-container" class="toast-container"></div>
+  <div id="app-header"></div>
+
+  <main class="flex-1 container mx-auto max-w-5xl px-4 sm:px-6 py-5 sm:py-8 fade-in">
+    <div class="space-y-4 sm:space-y-6">
+      <div class="media-hero">
+        <div>
+          <h2 class="text-2xl font-semibold tracking-tight">Media 媒体页</h2>
+          <p class="text-[var(--accents-4)] mt-1 text-sm">Grok 风格：上方瀑布流，下方输入栏。生成逻辑与 Imagine 保持一致。</p>
+        </div>
+
+        <div class="media-status">
+          <span class="media-status-label">状态</span>
+          <span id="statusText" class="media-status-value">未连接</span>
+          <span class="media-status-sep"></span>
+          <span class="media-status-label">数量</span>
+          <span id="countValue" class="media-status-value font-mono">0</span>
+          <span class="media-status-sep"></span>
+          <span class="media-status-label">活跃</span>
+          <span id="activeValue" class="media-status-value font-mono">0</span>
+        </div>
+      </div>
+
+      <div class="media-surface">
+        <div id="emptyState" class="media-empty">
+          <div class="empty-title">等待生成</div>
+          <div class="empty-subtitle">在下方输入提示词并点击“开始”，结果会出现在这里</div>
+        </div>
+        <div id="waterfall" class="media-waterfall"></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Bottom composer -->
+  <div class="media-composer" role="region" aria-label="Media composer">
+    <div class="media-composer-inner">
+      <div class="media-composer-row">
+        <textarea id="promptInput" class="geist-input media-prompt" placeholder="描述你想要的画面，例如：未来城市霓虹雨夜，广角摄影"></textarea>
+
+        <div class="media-composer-actions">
+          <button id="startBtn" class="geist-button media-primary-btn" type="button">开始</button>
+          <button id="stopBtn" class="geist-button-outline media-secondary-btn hidden" type="button">停止</button>
+          <button id="advancedToggle" class="geist-button-outline media-secondary-btn" type="button"
+            aria-expanded="false" aria-controls="advancedPanel">高级</button>
+        </div>
+      </div>
+
+      <div id="advancedPanel" class="media-advanced" hidden>
+        <div class="media-advanced-grid">
+          <div class="media-advanced-field">
+            <label class="field-label" for="ratioSelect">宽高比</label>
+            <select id="ratioSelect" class="geist-input">
+              <option value="2:3" selected>2:3 竖图</option>
+              <option value="1:1">1:1 方图</option>
+              <option value="3:2">3:2 横图</option>
+              <option value="16:9">16:9 宽屏</option>
+              <option value="9:16">9:16 竖屏</option>
+            </select>
+          </div>
+
+          <div class="media-advanced-field">
+            <label class="field-label" for="concurrentSelect">并发数量</label>
+            <select id="concurrentSelect" class="geist-input">
+              <option value="1" selected>1 个任务</option>
+              <option value="2">2 个任务</option>
+              <option value="3">3 个任务</option>
+            </select>
+          </div>
+
+          <div class="media-advanced-field">
+            <label class="field-label" for="nsfwSelect">是否 NSFW</label>
+            <select id="nsfwSelect" class="geist-input">
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+          </div>
+
+          <div class="media-advanced-field">
+            <div class="field-label">连接模式</div>
+            <div class="mode-switch" role="group" aria-label="Connection mode">
+              <button class="mode-btn" data-mode="auto" type="button">Auto</button>
+              <button class="mode-btn" data-mode="ws" type="button">WS</button>
+              <button class="mode-btn" data-mode="sse" type="button">SSE</button>
+            </div>
+            <div class="media-advanced-hint">Auto 会优先 WS，失败回退 SSE。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="app-footer"></div>
+
+  <script src="/static/common/js/admin-auth.js?v=0.3.0"></script>
+  <script src="/static/common/js/public-header.js?v=0.3.3"></script>
+  <script src="/static/common/js/footer.js?v=0.3.0"></script>
+  <script src="/static/common/js/toast.js"></script>
+  <script src="/static/common/js/prompt-enhancer.js?v=0.1.15"></script>
+  <script src="/static/common/js/pwa.js?v=0.1.1"></script>
+  <script src="/static/public/js/media.js?v=0.1.0"></script>
+</body>
+
+</html>
+]]>

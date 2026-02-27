@@ -62,3 +62,4 @@ config.local.toml
 data/config.toml
 
 vibe/
+plans/

@@ -29,6 +29,7 @@ self.addEventListener("fetch", (event) => {
   const cacheablePathPrefixes = [
     "/static/",
     "/login",
+    "/media",
     "/imagine",
     "/video",
     "/voice",

@@ -190,6 +190,18 @@
         class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center" disabled>
         NSFW
       </button>
+
+      <button id="btn-batch-recover-cooling" onclick="batchRecoverQuota(false)"
+        class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center"
+        title="仅对选中的 cooling Token：恢复默认额度并设为 active">
+        恢复(仅限流)
+      </button>
+      <button id="btn-batch-recover-all" onclick="batchRecoverQuota(true)"
+        class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center"
+        title="对选中的 cooling + active：恢复默认额度（cooling 会转为 active）">
+        恢复(含正常)
+      </button>
+
       <button id="btn-batch-delete" onclick="batchDelete()" class="geist-button-danger text-xs px-3">
         删除
       </button>
