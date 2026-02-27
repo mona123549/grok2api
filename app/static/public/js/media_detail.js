@@ -1,6 +1,8 @@
 (() => {
   const detailImage = document.getElementById('detailImage');
   const emptyState = document.getElementById('mediaDetailEmpty');
+  const stageVideoWrap = document.getElementById('detailStageVideoWrap');
+  const stageVideo = document.getElementById('detailStageVideo');
 
   const imageUrlText = document.getElementById('imageUrlText');
   const imageIdText = document.getElementById('imageIdText');
@@ -84,6 +86,7 @@
       prompt: get('prompt') || '',
       sourceImageUrl: get('source_image_url') || get('source') || '',
       cacheKey: get('cache_key') || '',
+      focus: get('focus') || '',
     };
   }
 
@@ -469,6 +472,16 @@
     }
 
     applyVideoFavoriteStateToItem(item, url);
+
+    // Auto-select the first completed video (best-effort) so stage can preview it.
+    if (url && !currentStageVideoUrl) {
+      showStageVideo(url);
+      if (item) {
+        const all = document.querySelectorAll('.media-detail-video-item.is-selected');
+        all.forEach((el) => el.classList.remove('is-selected'));
+        item.classList.add('is-selected');
+      }
+    }
   }
 
   function setVideoItemStatus(item, text, cls) {
@@ -487,6 +500,7 @@
     const videoEl = body.querySelector('video');
     let url = '';
     if (videoEl) {
+      // Keep list preview lightweight; stage will be the main player.
       videoEl.controls = true;
       videoEl.preload = 'metadata';
       videoEl.playsInline = true;
@@ -768,7 +782,6 @@
       if (!(target instanceof HTMLElement)) return;
 
       const role = target.getAttribute('data-role');
-      if (role !== 'download' && role !== 'favorite') return;
 
       if (role === 'download') {
         const url = String(target.dataset.url || '').trim();
@@ -792,78 +805,95 @@
         return;
       }
 
-      // favorite
+      if (role === 'favorite') {
+        const card = target.closest('.media-detail-video-item');
+        if (!card) return;
+
+        const url = String(card.dataset.videoUrl || '').trim();
+        if (!url) {
+          toast('视频尚未生成完成（缺少链接）', 'warning');
+          return;
+        }
+
+        const authHeader = typeof ensurePublicKey === 'function' ? await ensurePublicKey() : null;
+        if (authHeader === null) {
+          toast('请先配置 Public Key', 'error');
+          window.location.href = '/login';
+          return;
+        }
+
+        const currentOn = target.getAttribute('aria-pressed') === 'true';
+        target.disabled = true;
+
+        try {
+          if (!currentOn) {
+            const data = getQueryParams();
+            const rawImageUrl = String(data.imageUrl || '').trim();
+            const { parentPostId, sourceImageUrl } = resolveVideoSource(data, rawImageUrl);
+
+            const derivedFromId = parentPostId ? `img_${parentPostId}` : '';
+            const stableId = `vidu_${hashStringToHex(url)}`;
+
+            const resp = await favoriteVideoLibraryItem(authHeader, {
+              id: stableId,
+              media_type: 'video',
+              prompt: String(detailVideoPromptInput ? detailVideoPromptInput.value : '').trim() || String(data.prompt || '').trim(),
+              parent_post_id: String(parentPostId || '').trim(),
+              source_image_url: String(sourceImageUrl || '').trim(),
+              video_url: url,
+              derived_from_id: derivedFromId,
+              extra: {
+                source: 'media_detail_video',
+              },
+            });
+
+            const savedId = String(resp && resp.id ? resp.id : stableId).trim();
+            if (savedId) {
+              card.dataset.videoLibraryId = savedId;
+              videoFavoriteByUrl.set(url, savedId);
+            }
+
+            setVideoFavoriteUi(card, true);
+            toast('视频已收藏', 'success');
+          } else {
+            const libId = String(card.dataset.videoLibraryId || '').trim() || String(videoFavoriteByUrl.get(url) || '').trim();
+            if (!libId) {
+              toast('缺少 libraryId，无法取消收藏', 'error');
+              return;
+            }
+
+            const ok = await unfavoriteLibraryItemById(libId);
+            if (!ok) {
+              toast('取消收藏失败', 'error');
+              return;
+            }
+
+            videoFavoriteByUrl.delete(url);
+            setVideoFavoriteUi(card, false);
+            toast('已取消收藏', 'info');
+          }
+        } catch (e) {
+          toast('收藏操作失败', 'error');
+        } finally {
+          target.disabled = false;
+        }
+        return;
+      }
+
+      // Select video for stage preview (click anywhere on card except open link)
       const card = target.closest('.media-detail-video-item');
       if (!card) return;
+      if (target.closest && (target.closest('[data-role="open"]') || target.closest('a'))) return;
 
       const url = String(card.dataset.videoUrl || '').trim();
-      if (!url) {
-        toast('视频尚未生成完成（缺少链接）', 'warning');
-        return;
-      }
+      if (!url) return;
 
-      const authHeader = typeof ensurePublicKey === 'function' ? await ensurePublicKey() : null;
-      if (authHeader === null) {
-        toast('请先配置 Public Key', 'error');
-        window.location.href = '/login';
-        return;
-      }
+      // Update selected style
+      const prev = detailVideoResults.querySelectorAll('.media-detail-video-item.is-selected');
+      prev.forEach((el) => el.classList.remove('is-selected'));
+      card.classList.add('is-selected');
 
-      const currentOn = target.getAttribute('aria-pressed') === 'true';
-      target.disabled = true;
-
-      try {
-        if (!currentOn) {
-          const data = getQueryParams();
-          const rawImageUrl = String(data.imageUrl || '').trim();
-          const { parentPostId, sourceImageUrl } = resolveVideoSource(data, rawImageUrl);
-
-          const derivedFromId = parentPostId ? `img_${parentPostId}` : '';
-          const stableId = `vidu_${hashStringToHex(url)}`;
-
-          const resp = await favoriteVideoLibraryItem(authHeader, {
-            id: stableId,
-            media_type: 'video',
-            prompt: String(detailVideoPromptInput ? detailVideoPromptInput.value : '').trim() || String(data.prompt || '').trim(),
-            parent_post_id: String(parentPostId || '').trim(),
-            source_image_url: String(sourceImageUrl || '').trim(),
-            video_url: url,
-            derived_from_id: derivedFromId,
-            extra: {
-              source: 'media_detail_video',
-            },
-          });
-
-          const savedId = String(resp && resp.id ? resp.id : stableId).trim();
-          if (savedId) {
-            card.dataset.videoLibraryId = savedId;
-            videoFavoriteByUrl.set(url, savedId);
-          }
-
-          setVideoFavoriteUi(card, true);
-          toast('视频已收藏', 'success');
-        } else {
-          const libId = String(card.dataset.videoLibraryId || '').trim() || String(videoFavoriteByUrl.get(url) || '').trim();
-          if (!libId) {
-            toast('缺少 libraryId，无法取消收藏', 'error');
-            return;
-          }
-
-          const ok = await unfavoriteLibraryItemById(libId);
-          if (!ok) {
-            toast('取消收藏失败', 'error');
-            return;
-          }
-
-          videoFavoriteByUrl.delete(url);
-          setVideoFavoriteUi(card, false);
-          toast('已取消收藏', 'info');
-        }
-      } catch (e) {
-        toast('收藏操作失败', 'error');
-      } finally {
-        target.disabled = false;
-      }
+      showStageVideo(url);
     });
   }
 
@@ -996,9 +1026,54 @@
     }
   }
 
+  let currentStageVideoUrl = '';
+
+  function clearStageVideo() {
+    currentStageVideoUrl = '';
+    if (stageVideoWrap) stageVideoWrap.hidden = true;
+    if (stageVideo) {
+      try {
+        stageVideo.pause();
+      } catch (e) {
+        // ignore
+      }
+      stageVideo.removeAttribute('src');
+      try {
+        stageVideo.load();
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    // Restore image main visual when closing stage video preview
+    if (detailImage && String(detailImage.getAttribute('src') || '').trim()) {
+      detailImage.classList.add('is-visible');
+    }
+  }
+
+  function showStageVideo(url) {
+    const clean = String(url || '').trim();
+    if (!stageVideo || !stageVideoWrap) return;
+    if (!clean) return;
+
+    currentStageVideoUrl = clean;
+
+    // Keep image visible behind; stage video is an overlay preview
+    stageVideoWrap.hidden = false;
+    stageVideo.src = clean;
+    try {
+      stageVideo.load();
+    } catch (e) {
+      // ignore
+    }
+  }
+
   function showImage(url) {
     const clean = String(url || '').trim();
     if (!detailImage) return;
+
+    // When switching image (or initial load), reset stage video selection
+    clearStageVideo();
 
     if (!clean) {
       detailImage.classList.remove('is-visible');
@@ -1063,25 +1138,33 @@
 
     const rawImageUrl = String(data.imageUrl || '').trim();
 
-    showImage(rawImageUrl);
-    setMeta({ ...data, imageUrl: rawImageUrl });
+    // T6: if image_url is missing, fallback to imagine-public derived by image_id
+    const fallbackParentPostId = extractParentPostIdFromText(data.imageId);
+    const fallbackUrl = (!rawImageUrl && fallbackParentPostId) ? buildImaginePublicUrl(fallbackParentPostId) : '';
+    const finalImageUrl = rawImageUrl || fallbackUrl;
 
-    bindCopy(copyMainBtn, () => rawImageUrl, '已复制图片地址');
-    bindCopy(copyUrlBtn, () => rawImageUrl, '已复制图片地址');
+    // Also fill sourceImageUrl in meta when missing (so advanced info is not "-")
+    const finalSourceImageUrl = String(data.sourceImageUrl || '').trim() || fallbackUrl;
+
+    showImage(finalImageUrl);
+    setMeta({ ...data, imageUrl: finalImageUrl, sourceImageUrl: finalSourceImageUrl });
+
+    bindCopy(copyMainBtn, () => finalImageUrl, '已复制图片地址');
+    bindCopy(copyUrlBtn, () => finalImageUrl, '已复制图片地址');
     bindCopy(copyIdBtn, () => data.imageId, '已复制 ID');
-    bindCopy(copySourceBtn, () => data.sourceImageUrl, '已复制 sourceImageUrl');
+    bindCopy(copySourceBtn, () => finalSourceImageUrl, '已复制 sourceImageUrl');
     bindCopy(copyPromptBtn, () => data.prompt, '已复制 Prompt');
 
     if (downloadBtn) {
       downloadBtn.addEventListener('click', async () => {
-        if (!rawImageUrl) {
+        if (!finalImageUrl) {
           toast('图片地址为空', 'warning');
           return;
         }
         try {
-          const ext = inferExtFromUrl(rawImageUrl);
+          const ext = inferExtFromUrl(finalImageUrl);
           const filename = buildFilename(data.imageId, ext);
-          await downloadByUrl(rawImageUrl, filename);
+          await downloadByUrl(finalImageUrl, filename);
           toast('已开始下载', 'success');
         } catch (e) {
           toast('下载失败', 'error');
@@ -1109,7 +1192,7 @@
 
     if (favoriteBtn) {
       favoriteBtn.addEventListener('click', async () => {
-        const { parentPostId, sourceImageUrl } = resolveVideoSource(data, rawImageUrl);
+        const { parentPostId, sourceImageUrl } = resolveVideoSource(data, finalImageUrl);
         if (!parentPostId) {
           toast('缺少 parentPostId（image_id），无法收藏入库', 'error');
           return;
@@ -1120,12 +1203,12 @@
 
         try {
           if (!currentOn) {
-            const stableId = buildStableLibraryIdForImage({ parentPostId, imageUrl: rawImageUrl }) || '';
+            const stableId = buildStableLibraryIdForImage({ parentPostId, imageUrl: finalImageUrl }) || '';
             const resp = await favoriteImageItem({
               parentPostId,
               prompt: data.prompt,
               sourceImageUrl,
-              imageUrl: rawImageUrl,
+              imageUrl: finalImageUrl,
               id: stableId,
               extra: {
                 source: 'media_detail',
@@ -1169,7 +1252,7 @@
 
     if (editImageBtn) {
       editImageBtn.addEventListener('click', () => {
-        const { parentPostId, sourceImageUrl } = resolveVideoSource(data, rawImageUrl);
+        const { parentPostId, sourceImageUrl } = resolveVideoSource(data, finalImageUrl);
         if (!parentPostId) {
           toast('缺少 parentPostId，无法跳转到编辑工作台', 'error');
           return;
@@ -1185,7 +1268,7 @@
     // Initialize favorite state (best-effort preload)
     setFavoriteUi(false);
     preloadFavoriteIndex().then(() => {
-      const { parentPostId } = resolveVideoSource(data, rawImageUrl);
+      const { parentPostId } = resolveVideoSource(data, finalImageUrl);
       if (!parentPostId) return;
       const libId = String(favoriteByParentPostId.get(parentPostId) || '').trim();
       if (libId) {
@@ -1203,9 +1286,24 @@
     setVideoButtons(false);
     setVideoStatus('未开始');
 
+    // T10: click backdrop to close stage video preview
+    if (stageVideoWrap) {
+      stageVideoWrap.addEventListener('click', (event) => {
+        const target = event && event.target ? event.target : null;
+        if (target !== stageVideoWrap) return;
+        clearStageVideo();
+
+        // Clear list selection
+        if (detailVideoResults) {
+          const selected = detailVideoResults.querySelectorAll('.media-detail-video-item.is-selected');
+          selected.forEach((el) => el.classList.remove('is-selected'));
+        }
+      });
+    }
+
     if (detailVideoStartBtn) {
       detailVideoStartBtn.addEventListener('click', () => {
-        startDetailVideo(data, rawImageUrl);
+        startDetailVideo(data, finalImageUrl);
       });
     }
     if (detailVideoStopBtn) {
@@ -1217,9 +1315,26 @@
       detailVideoPromptInput.addEventListener('keydown', (event) => {
         if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
           event.preventDefault();
-          startDetailVideo(data, rawImageUrl);
+          startDetailVideo(data, finalImageUrl);
         }
       });
+    }
+
+    // Focus video panel when navigated from /media play button
+    if (String(data.focus || '').trim() === 'video') {
+      setTimeout(() => {
+        const composer = document.querySelector('.media-detail-composer');
+        if (composer && composer.scrollIntoView) {
+          composer.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        }
+        if (detailVideoPromptInput && detailVideoPromptInput.focus) {
+          try {
+            detailVideoPromptInput.focus({ preventScroll: true });
+          } catch (e) {
+            detailVideoPromptInput.focus();
+          }
+        }
+      }, 0);
     }
 
     window.addEventListener('beforeunload', () => {

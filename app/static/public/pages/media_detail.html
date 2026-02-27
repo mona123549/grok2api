@@ -32,6 +32,22 @@
 
   <main class="flex-1 container mx-auto max-w-6xl px-4 sm:px-6 py-5 sm:py-8 fade-in">
     <div class="media-detail-layout">
+      <aside class="media-detail-video-column" aria-label="Media detail video list">
+        <section class="media-detail-video-surface" aria-label="Media detail video results">
+          <div class="media-detail-video-head">
+            <div class="media-detail-video-title">视频结果</div>
+            <div class="media-detail-video-subtitle">基于当前图片生成视频（SSE 流式返回）</div>
+          </div>
+
+          <div id="detailVideoEmpty" class="media-detail-video-empty">
+            <div class="empty-title">还没有视频</div>
+            <div class="empty-subtitle">在下方输入提示词（可选）并点击“生成视频”</div>
+          </div>
+
+          <div id="detailVideoResults" class="media-detail-video-results"></div>
+        </section>
+      </aside>
+
       <section class="media-detail-stage" aria-label="Media detail image stage">
         <div id="mediaDetailEmpty" class="media-detail-empty">
           <div class="empty-title">未找到图片</div>
@@ -39,12 +55,46 @@
         </div>
 
         <img id="detailImage" class="media-detail-image" alt="media-detail" />
+
+        <div id="detailStageVideoWrap" class="media-detail-stage-video" hidden>
+          <video id="detailStageVideo" controls preload="metadata" playsinline webkit-playsinline></video>
+        </div>
       </section>
 
       <aside class="media-detail-panel" aria-label="Media detail information">
         <div class="media-detail-title-row">
           <h2 class="media-detail-title">单图详情</h2>
           <div class="media-detail-subtitle">以 Prompt 为主；其余信息收纳到“高级信息”</div>
+        </div>
+
+        <div class="media-detail-action-group" role="region" aria-label="Media detail actions">
+          <button id="backBtn" class="media-detail-action-btn" type="button" aria-label="Back to media">
+            返回
+          </button>
+
+          <span class="media-detail-actions-sep"></span>
+
+          <button id="downloadBtn" class="media-detail-action-btn" type="button" aria-label="Download image">
+            下载
+          </button>
+
+          <button id="copyMainBtn" class="media-detail-action-btn" type="button" aria-label="Copy image url">
+            复制地址
+          </button>
+
+          <button id="favoriteBtn" class="media-detail-action-btn" type="button" aria-pressed="false" aria-label="Favorite media item">
+            收藏
+          </button>
+
+          <button id="editImageBtn" class="media-detail-action-btn" type="button" aria-label="Edit image in workbench">
+            编辑
+          </button>
+
+          <span class="media-detail-actions-sep"></span>
+
+          <button id="upscaleBtn" class="media-detail-action-btn" type="button" aria-pressed="false" aria-label="Upscale toggle">
+            超分：关
+          </button>
         </div>
 
         <div class="media-detail-meta">
@@ -82,20 +132,6 @@
         </div>
       </aside>
     </div>
-
-    <section class="media-detail-video-surface" aria-label="Media detail video results">
-      <div class="media-detail-video-head">
-        <div class="media-detail-video-title">视频结果</div>
-        <div class="media-detail-video-subtitle">基于当前图片生成视频（SSE 流式返回）</div>
-      </div>
-
-      <div id="detailVideoEmpty" class="media-detail-video-empty">
-        <div class="empty-title">还没有视频</div>
-        <div class="empty-subtitle">在下方输入提示词（可选）并点击“生成视频”</div>
-      </div>
-
-      <div id="detailVideoResults" class="media-detail-video-results"></div>
-    </section>
   </main>
 
   <!-- Video composer -->
@@ -174,37 +210,6 @@
         </div>
       </div>
     </div>
-  </div>
-
-  <!-- Floating actions -->
-  <div class="media-detail-actions" role="region" aria-label="Media detail actions">
-    <button id="backBtn" class="media-detail-action-btn" type="button" aria-label="Back to media">
-      返回
-    </button>
-
-    <span class="media-detail-actions-sep"></span>
-
-    <button id="downloadBtn" class="media-detail-action-btn" type="button" aria-label="Download image">
-      下载
-    </button>
-
-    <button id="copyMainBtn" class="media-detail-action-btn" type="button" aria-label="Copy image url">
-      复制地址
-    </button>
-
-    <button id="favoriteBtn" class="media-detail-action-btn" type="button" aria-pressed="false" aria-label="Favorite media item">
-      收藏
-    </button>
-
-    <button id="editImageBtn" class="media-detail-action-btn" type="button" aria-label="Edit image in workbench">
-      编辑
-    </button>
-
-    <span class="media-detail-actions-sep"></span>
-
-    <button id="upscaleBtn" class="media-detail-action-btn" type="button" aria-pressed="false" aria-label="Upscale toggle">
-      超分：关
-    </button>
   </div>
 
   <div id="app-footer"></div>

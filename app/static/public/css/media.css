@@ -6,8 +6,15 @@
   --media-border: var(--border);
   --media-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
   --media-composer-bg: rgba(255, 255, 255, 0.92);
-  /* Workbench width: keep "about 3 cards wide" even on very wide screens */
-  --media-workbench-width: 980px;
+
+  /* Waterfall container width: should accommodate 4 cards on desktop */
+  --media-waterfall-width: 1280px;
+
+  /* Composer width: keep "about 3 cards wide" even on very wide screens */
+  --media-composer-width: 780px;
+
+  /* Backward compatibility (older styles referenced this var) */
+  --media-workbench-width: var(--media-composer-width);
 }
 
 html[data-theme='dark'] {
@@ -87,7 +94,7 @@ html[data-theme='dark'] {
 
 .media-surface {
   width: 100%;
-  max-width: var(--media-workbench-width);
+  max-width: min(var(--media-waterfall-width), 100%);
   margin: 0 auto;
   background: var(--media-surface);
   border: 1px solid var(--media-border);
@@ -188,7 +195,7 @@ html[data-theme='dark'] .media-empty {
 
 .media-waterfall {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 14px;
   width: 100%;
 }
@@ -271,35 +278,45 @@ html[data-theme='dark'] .media-item:hover {
   position: absolute;
   top: 8px;
   right: 48px;
+  width: 28px;
   height: 28px;
-  min-width: 28px;
-  padding: 0 10px;
+  padding: 0;
   border-radius: 999px;
   border: 1px solid rgba(0, 0, 0, 0.12);
   background: rgba(255, 255, 255, 0.92);
-  color: #111;
-  font-size: 11px;
-  font-weight: 700;
+  color: rgba(17, 17, 17, 0.92);
   cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.16s ease, transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  /* Always visible on desktop (do not rely on hover) */
+  opacity: 1;
+  pointer-events: auto;
+  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
   backdrop-filter: blur(8px);
-  transform: translateY(-2px);
+}
+
+.media-fav-btn:active {
+  transform: scale(0.96);
+}
+
+.media-fav-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
 }
 
 .media-item:hover .media-download-btn,
-.media-download-btn:focus,
-.media-item:hover .media-fav-btn,
-.media-fav-btn:focus {
+.media-download-btn:focus {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
 }
 
 @media (max-width: 900px) {
-  .media-download-btn,
-  .media-fav-btn {
+  .media-download-btn {
     opacity: 1;
     pointer-events: auto;
   }
@@ -334,13 +351,62 @@ html[data-theme='dark'] .media-fav-btn.is-on {
   color: rgba(255, 180, 180, 1);
 }
 
+/* Card play button (bottom-right) */
+.media-play-btn {
+  position: absolute;
+  right: 8px;
+  bottom: 44px; /* keep above meta bar */
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+  color: rgba(17, 17, 17, 0.92);
+  cursor: pointer;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  opacity: 1;
+  pointer-events: auto;
+  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+  backdrop-filter: blur(8px);
+}
+
+.media-play-btn:active {
+  transform: scale(0.96);
+}
+
+.media-play-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+html[data-theme='dark'] .media-play-btn {
+  background: rgba(19, 26, 36, 0.92);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--fg);
+}
+
+.media-play-btn:hover {
+  background: rgba(255, 255, 255, 1);
+}
+
+html[data-theme='dark'] .media-play-btn:hover {
+  background: rgba(26, 35, 48, 0.98);
+}
+
 /* Selection mode (batch download) */
 .media-item.selection-mode {
   cursor: pointer;
 }
 
 .media-item.selection-mode .media-download-btn,
-.media-item.selection-mode .media-fav-btn {
+.media-item.selection-mode .media-fav-btn,
+.media-item.selection-mode .media-play-btn {
   opacity: 0 !important;
   pointer-events: none !important;
 }
@@ -416,7 +482,7 @@ html[data-theme='dark'] .media-item.selected .media-checkbox::after {
   transform: translateX(-50%);
   bottom: 24px;
   z-index: 30;
-  width: min(var(--media-workbench-width), calc(100vw - 24px));
+  width: min(var(--media-composer-width), calc(100vw - 24px));
   border: 1px solid var(--media-border);
   border-radius: 16px;
   background: var(--media-composer-bg);
@@ -495,10 +561,7 @@ html[data-theme='dark'] .media-item.selected .media-checkbox::after {
   border: 1px solid var(--media-border);
   background: var(--media-surface);
   padding: 8px;
-
-  /* Keep advanced panel visually narrower than the composer for a more "compact" feel */
-  max-width: min(680px, 100%);
-  margin: 0 auto;
+  width: 100%;
 }
 
 .media-advanced-grid {
@@ -592,6 +655,7 @@ html[data-theme='dark'] .media-item.selected .media-checkbox::after {
 
 /* Auto-save folder button */
 .media-save-field {
+  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
   gap: 8px;

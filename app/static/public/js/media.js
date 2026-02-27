@@ -949,13 +949,39 @@
     return '';
   }
 
+  function buildHeartSvg({ filled }) {
+    const isFilled = Boolean(filled);
+    const fill = isFilled ? 'currentColor' : 'none';
+    const stroke = 'currentColor';
+    return `
+      <svg class="media-fav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path
+          d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+          fill="${fill}"
+          stroke="${stroke}"
+          stroke-width="1.6"
+          stroke-linejoin="round"
+        />
+      </svg>
+    `.trim();
+  }
+
+  function buildPlaySvg() {
+    return `
+      <svg class="media-play-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M9 7l10 5-10 5V7z" fill="currentColor"></path>
+      </svg>
+    `.trim();
+  }
+
   function setFavUi(btn, on) {
     if (!btn) return;
     const isOn = Boolean(on);
     btn.classList.toggle('is-on', isOn);
     btn.setAttribute('aria-pressed', isOn ? 'true' : 'false');
-    btn.textContent = isOn ? '已藏' : '收藏';
+    btn.setAttribute('aria-label', isOn ? '取消收藏（仍保留记录）' : '收藏入库');
     btn.title = isOn ? '取消收藏（仍保留记录）' : '收藏入库';
+    btn.innerHTML = buildHeartSvg({ filled: isOn });
   }
 
   function refreshFavoriteUiForExistingWaterfallItems() {
@@ -1307,7 +1333,7 @@
 
     item.addEventListener('click', (e) => {
       const target = e && e.target ? e.target : null;
-      if (target && target.closest && (target.closest('.media-download-btn') || target.closest('.media-fav-btn'))) return;
+      if (target && target.closest && (target.closest('.media-download-btn') || target.closest('.media-fav-btn') || target.closest('.media-play-btn'))) return;
 
       if (isSelectionMode) {
         e.preventDefault();
@@ -1336,9 +1362,7 @@
     const favBtn = document.createElement('button');
     favBtn.type = 'button';
     favBtn.className = 'media-fav-btn';
-    favBtn.setAttribute('aria-pressed', 'false');
-    favBtn.textContent = '收藏';
-    favBtn.title = '收藏入库';
+    setFavUi(favBtn, false);
     favBtn.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1361,6 +1385,35 @@
       }
     }
     setFavUi(favBtn, String(item.dataset.favorite || '0') === '1');
+
+    const playBtn = document.createElement('button');
+    playBtn.type = 'button';
+    playBtn.className = 'media-play-btn';
+    playBtn.setAttribute('aria-label', '播放 / 生成视频');
+    playBtn.title = '播放 / 生成视频';
+    playBtn.innerHTML = buildPlaySvg();
+    playBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (isSelectionMode) return;
+
+      persistWaterfallSession();
+
+      const url = String(item.dataset.imageUrl || '').trim();
+      const id = String(item.dataset.imageId || '').trim();
+      const pp = String(item.dataset.prompt || '').trim();
+      const ss = String(item.dataset.sourceImageUrl || '').trim();
+
+      window.location.href = buildMediaDetailUrl({
+        imageUrl: url,
+        imageId: id,
+        prompt: pp,
+        sourceImageUrl: ss,
+        sequence: seq,
+        focus: 'video',
+      });
+    });
 
     const downloadBtn = document.createElement('button');
     downloadBtn.type = 'button';
@@ -1409,6 +1462,7 @@
 
     item.appendChild(checkbox);
     item.appendChild(favBtn);
+    item.appendChild(playBtn);
     item.appendChild(downloadBtn);
     item.appendChild(img);
     item.appendChild(metaBar);
@@ -1502,17 +1556,19 @@
     return imageCount > 0;
   }
 
-  function buildMediaDetailUrl({ imageUrl, imageId, prompt, sourceImageUrl, sequence }) {
+  function buildMediaDetailUrl({ imageUrl, imageId, prompt, sourceImageUrl, sequence, focus }) {
     const params = new URLSearchParams();
     const id = String(imageId || '').trim();
     const url = String(imageUrl || '').trim();
     const p = String(prompt || '').trim();
     const src = String(sourceImageUrl || '').trim();
     const seq = Number.isFinite(Number(sequence)) ? String(sequence) : '';
+    const f = String(focus || '').trim();
 
     if (id) params.set('image_id', id);
     if (p) params.set('prompt', p);
     if (src) params.set('source_image_url', src);
+    if (f) params.set('focus', f);
 
     // Prevent querystring explosion for large data URLs
     const isData = url.startsWith('data:');
@@ -1591,7 +1647,7 @@
 
       item.addEventListener('click', (e) => {
         const target = e && e.target ? e.target : null;
-        if (target && target.closest && (target.closest('.media-download-btn') || target.closest('.media-fav-btn'))) return;
+        if (target && target.closest && (target.closest('.media-download-btn') || target.closest('.media-fav-btn') || target.closest('.media-play-btn'))) return;
 
         if (isSelectionMode) {
           e.preventDefault();
@@ -1619,9 +1675,7 @@
       const favBtn = document.createElement('button');
       favBtn.type = 'button';
       favBtn.className = 'media-fav-btn';
-      favBtn.setAttribute('aria-pressed', 'false');
-      favBtn.textContent = '收藏';
-      favBtn.title = '收藏入库';
+      setFavUi(favBtn, false);
       favBtn.addEventListener('click', async (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -1636,6 +1690,34 @@
         item.dataset.libraryId = libId;
       }
       setFavUi(favBtn, String(item.dataset.favorite || '0') === '1');
+
+      const playBtn = document.createElement('button');
+      playBtn.type = 'button';
+      playBtn.className = 'media-play-btn';
+      playBtn.setAttribute('aria-label', '播放 / 生成视频');
+      playBtn.title = '播放 / 生成视频';
+      playBtn.innerHTML = buildPlaySvg();
+      playBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (isSelectionMode) return;
+
+        persistWaterfallSession();
+
+        const url = String(item.dataset.imageUrl || '').trim();
+        const id = String(item.dataset.imageId || '').trim();
+        const p = String(item.dataset.prompt || '').trim();
+        const src = String(item.dataset.sourceImageUrl || '').trim();
+        window.location.href = buildMediaDetailUrl({
+          imageUrl: url,
+          imageId: id,
+          prompt: p,
+          sourceImageUrl: src,
+          sequence,
+          focus: 'video',
+        });
+      });
 
       const downloadBtn = document.createElement('button');
       downloadBtn.type = 'button';
@@ -1684,6 +1766,7 @@
 
       item.appendChild(checkbox);
       item.appendChild(favBtn);
+      item.appendChild(playBtn);
       item.appendChild(downloadBtn);
       item.appendChild(img);
       item.appendChild(metaBar);
