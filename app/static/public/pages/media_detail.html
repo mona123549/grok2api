@@ -153,61 +153,64 @@
         <span class="media-detail-video-status-label">视频</span>
         <span id="detailVideoStatusText" class="media-detail-video-status-value">未开始</span>
       </div>
+    </div>
+  </div>
 
-      <div id="detailVideoAdvancedPanel" class="media-detail-video-advanced" hidden>
-        <div class="media-detail-video-advanced-grid">
-          <div class="media-detail-video-advanced-field">
-            <label class="field-label" for="detailVideoRatioSelect">宽高比</label>
-            <select id="detailVideoRatioSelect" class="geist-input">
-              <option value="2:3">2:3 竖图</option>
-              <option value="1:1">1:1 方图</option>
-              <option value="3:2">3:2 横图</option>
-              <option value="16:9" selected>16:9 宽屏</option>
-              <option value="9:16">9:16 竖屏</option>
-            </select>
-          </div>
-
-          <div class="media-detail-video-advanced-field">
-            <label class="field-label" for="detailVideoParallelSelect">并发</label>
-            <select id="detailVideoParallelSelect" class="geist-input">
-              <option value="1" selected>1 路</option>
-              <option value="2">2 路</option>
-              <option value="3">3 路</option>
-              <option value="4">4 路</option>
-            </select>
-          </div>
-
-          <div class="media-detail-video-advanced-field">
-            <label class="field-label" for="detailVideoLengthSelect">时长</label>
-            <select id="detailVideoLengthSelect" class="geist-input">
-              <option value="6" selected>6s</option>
-              <option value="10">10s</option>
-              <option value="15">15s</option>
-            </select>
-          </div>
-
-          <div class="media-detail-video-advanced-field">
-            <label class="field-label" for="detailVideoResolutionSelect">分辨率</label>
-            <select id="detailVideoResolutionSelect" class="geist-input">
-              <option value="480p" selected>480p</option>
-              <option value="720p">720p</option>
-              <option value="1080p">1080p</option>
-            </select>
-          </div>
-
-          <div class="media-detail-video-advanced-field">
-            <label class="field-label" for="detailVideoPresetSelect">预设</label>
-            <select id="detailVideoPresetSelect" class="geist-input">
-              <option value="normal">normal</option>
-              <option value="spicy">spicy</option>
-              <option value="custom" selected>custom</option>
-            </select>
-          </div>
+  <!-- Advanced settings popover (moved out of composer flow; fixed layer) -->
+  <div id="detailVideoAdvancedPopover" class="media-detail-advanced-popover-root">
+    <div id="detailVideoAdvancedPanel" class="media-detail-video-advanced" hidden>
+      <div class="media-detail-video-advanced-grid">
+        <div class="media-detail-video-advanced-field">
+          <label class="field-label" for="detailVideoRatioSelect">宽高比</label>
+          <select id="detailVideoRatioSelect" class="geist-input">
+            <option value="2:3">2:3 竖图</option>
+            <option value="1:1">1:1 方图</option>
+            <option value="3:2">3:2 横图</option>
+            <option value="16:9" selected>16:9 宽屏</option>
+            <option value="9:16">9:16 竖屏</option>
+          </select>
         </div>
 
-        <div class="media-detail-video-advanced-hint">
-          提示：Prompt 可为空；未选择目录写入时（如下载视频）仍走浏览器下载。
+        <div class="media-detail-video-advanced-field">
+          <label class="field-label" for="detailVideoParallelSelect">并发</label>
+          <select id="detailVideoParallelSelect" class="geist-input">
+            <option value="1" selected>1 路</option>
+            <option value="2">2 路</option>
+            <option value="3">3 路</option>
+            <option value="4">4 路</option>
+          </select>
         </div>
+
+        <div class="media-detail-video-advanced-field">
+          <label class="field-label" for="detailVideoLengthSelect">时长</label>
+          <select id="detailVideoLengthSelect" class="geist-input">
+            <option value="6" selected>6s</option>
+            <option value="10">10s</option>
+            <option value="15">15s</option>
+          </select>
+        </div>
+
+        <div class="media-detail-video-advanced-field">
+          <label class="field-label" for="detailVideoResolutionSelect">分辨率</label>
+          <select id="detailVideoResolutionSelect" class="geist-input">
+            <option value="480p" selected>480p</option>
+            <option value="720p">720p</option>
+            <option value="1080p">1080p</option>
+          </select>
+        </div>
+
+        <div class="media-detail-video-advanced-field">
+          <label class="field-label" for="detailVideoPresetSelect">预设</label>
+          <select id="detailVideoPresetSelect" class="geist-input">
+            <option value="normal">normal</option>
+            <option value="spicy">spicy</option>
+            <option value="custom" selected>custom</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="media-detail-video-advanced-hint">
+        提示：Prompt 可为空；未选择目录写入时（如下载视频）仍走浏览器下载。
       </div>
     </div>
   </div>

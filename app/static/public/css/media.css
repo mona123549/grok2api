@@ -259,15 +259,19 @@ html[data-theme='dark'] .media-item:hover {
   /* Under heart button */
   top: 42px;
   right: 8px;
+  width: 28px;
   height: 28px;
-  padding: 0 10px;
+  padding: 0;
   border-radius: 999px;
   border: 1px solid rgba(0, 0, 0, 0.12);
   background: rgba(255, 255, 255, 0.92);
   color: #111;
-  font-size: 11px;
-  font-weight: 600;
   cursor: pointer;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.16s ease, transform 0.16s ease, background 0.16s ease;
@@ -306,6 +310,12 @@ html[data-theme='dark'] .media-item:hover {
 }
 
 .media-fav-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.media-download-icon {
   width: 16px;
   height: 16px;
   display: block;
@@ -524,6 +534,17 @@ html[data-theme='dark'] .media-item.selected .media-checkbox::after {
   display: flex;
   align-items: flex-end;
   gap: 10px;
+}
+
+/* Fix: prompt-enhancer wrapper may overflow in flex row and cover action buttons (Stop/Advanced). */
+.media-composer-row .prompt-enhance-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.media-composer-row .prompt-enhance-wrap > textarea {
+  width: 100%;
 }
 
 @media (max-width: 900px) {

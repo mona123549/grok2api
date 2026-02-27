@@ -35,7 +35,8 @@ html[data-theme='dark'] {
   margin: 0 auto;
 
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr) minmax(260px, 360px);
+  /* Make middle stage more prominent: narrower side columns (about half of previous max). */
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr) minmax(200px, 260px);
   gap: 18px;
   align-items: start;
 }
@@ -562,6 +563,24 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
   border: 1px solid var(--md-border);
   background: var(--md-surface);
   padding: 10px;
+}
+
+/* Advanced settings popover (fixed, does not affect composer height) */
+#detailVideoAdvancedPopover {
+  position: fixed;
+  inset: 0;
+  z-index: 60; /* above .media-detail-composer (z-index: 50) */
+  pointer-events: none; /* allow click-through; click-outside handled by JS */
+}
+
+#detailVideoAdvancedPopover #detailVideoAdvancedPanel {
+  position: fixed;
+  width: 420px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  pointer-events: auto;
+  box-shadow: var(--md-shadow);
 }
 
 .media-detail-video-advanced-grid {

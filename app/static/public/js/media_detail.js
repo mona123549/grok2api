@@ -27,6 +27,7 @@
   const detailVideoStopBtn = document.getElementById('detailVideoStopBtn');
   const detailVideoAdvancedToggle = document.getElementById('detailVideoAdvancedToggle');
   const detailVideoAdvancedPanel = document.getElementById('detailVideoAdvancedPanel');
+  const detailVideoAdvancedPopoverRoot = document.getElementById('detailVideoAdvancedPopover');
   const detailVideoStatusText = document.getElementById('detailVideoStatusText');
   const detailVideoEmpty = document.getElementById('detailVideoEmpty');
   const detailVideoResults = document.getElementById('detailVideoResults');
@@ -250,16 +251,112 @@
   }
 
   function bindDetailVideoAdvancedToggle() {
-    if (!detailVideoAdvancedToggle || !detailVideoAdvancedPanel) return;
+    if (!detailVideoAdvancedToggle || !detailVideoAdvancedPanel || !detailVideoAdvancedPopoverRoot) return;
+
+    let isOpen = false;
+
+    const GAP_PX = 8;
+    const PADDING_PX = 10;
+
     const setOpen = (open) => {
-      const isOpen = Boolean(open);
+      isOpen = Boolean(open);
       detailVideoAdvancedToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
       detailVideoAdvancedPanel.hidden = !isOpen;
+
+      if (!isOpen) {
+        detailVideoAdvancedPanel.style.left = '';
+        detailVideoAdvancedPanel.style.top = '';
+        detailVideoAdvancedPanel.style.width = '';
+        detailVideoAdvancedPanel.style.maxWidth = '';
+        detailVideoAdvancedPanel.style.visibility = '';
+      }
     };
+
+    const positionPopover = () => {
+      if (!isOpen) return;
+
+      const toggleRect = detailVideoAdvancedToggle.getBoundingClientRect();
+      const composerEl = detailVideoAdvancedToggle.closest('.media-detail-composer') || document.querySelector('.media-detail-composer');
+      const composerRect = composerEl ? composerEl.getBoundingClientRect() : toggleRect;
+
+      const viewportW = window.innerWidth;
+      const viewportH = window.innerHeight;
+
+      const left = composerRect.right + GAP_PX;
+      const availableW = Math.max(0, viewportW - left - PADDING_PX);
+
+      // Make it measurable (without flashing) and apply width constraint before measuring height.
+      detailVideoAdvancedPanel.hidden = false;
+      detailVideoAdvancedPanel.style.visibility = 'hidden';
+      detailVideoAdvancedPanel.style.left = '0px';
+      detailVideoAdvancedPanel.style.top = '0px';
+
+      const desiredW = 420;
+      const effectiveW = Math.max(0, Math.min(desiredW, availableW));
+      detailVideoAdvancedPanel.style.width = `${Math.round(effectiveW)}px`;
+      detailVideoAdvancedPanel.style.maxWidth = `${Math.round(availableW)}px`;
+
+      const popH = detailVideoAdvancedPanel.offsetHeight || 320;
+
+      // Align to toggle top; clamp to viewport
+      let top = toggleRect.top;
+      top = Math.min(top, viewportH - popH - PADDING_PX);
+      top = Math.max(PADDING_PX, top);
+
+      detailVideoAdvancedPanel.style.left = `${Math.round(left)}px`;
+      detailVideoAdvancedPanel.style.top = `${Math.round(top)}px`;
+      detailVideoAdvancedPanel.style.visibility = 'visible';
+    };
+
+    const onDocClickCapture = (e) => {
+      if (!isOpen) return;
+      const target = e && e.target ? e.target : null;
+      if (!target) return;
+
+      if (detailVideoAdvancedPanel.contains(target) || detailVideoAdvancedToggle.contains(target)) return;
+      setOpen(false);
+      unbindGlobalListeners();
+    };
+
+    const onKeyDown = (e) => {
+      if (!isOpen) return;
+      if (!e) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setOpen(false);
+        unbindGlobalListeners();
+      }
+    };
+
+    const onWindowResize = () => positionPopover();
+    const onWindowScroll = () => positionPopover();
+
+    const bindGlobalListeners = () => {
+      document.addEventListener('click', onDocClickCapture, true);
+      document.addEventListener('keydown', onKeyDown);
+      window.addEventListener('resize', onWindowResize);
+      window.addEventListener('scroll', onWindowScroll, true);
+    };
+
+    var unbindGlobalListeners = () => {
+      document.removeEventListener('click', onDocClickCapture, true);
+      document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onWindowResize);
+      window.removeEventListener('scroll', onWindowScroll, true);
+    };
+
     setOpen(false);
+    unbindGlobalListeners();
+
     detailVideoAdvancedToggle.addEventListener('click', () => {
-      const expanded = detailVideoAdvancedToggle.getAttribute('aria-expanded') === 'true';
-      setOpen(!expanded);
+      const next = !isOpen;
+      setOpen(next);
+      if (next) {
+        bindGlobalListeners();
+        positionPopover();
+      } else {
+        unbindGlobalListeners();
+      }
     });
   }
 

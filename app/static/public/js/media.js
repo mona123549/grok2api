@@ -327,6 +327,15 @@
     }
   }
 
+  const STOP_BTN_DEFAULT_TEXT = stopBtn ? (String(stopBtn.textContent || '').trim() || '停止') : '停止';
+
+  function setStopButtonStopping(stopping, label) {
+    if (!stopBtn) return;
+    const isStopping = Boolean(stopping);
+    stopBtn.disabled = isStopping;
+    stopBtn.textContent = isStopping ? (String(label || '').trim() || '停止中...') : STOP_BTN_DEFAULT_TEXT;
+  }
+
   function updateCount(value) {
     if (!countValue) return;
     countValue.textContent = String(value);
@@ -442,6 +451,7 @@
     isRunning = false;
     updateActive();
     setButtons(false);
+    setStopButtonStopping(false);
     setStatus('', '未连接');
   }
 
@@ -462,6 +472,7 @@
     isRunning = false;
     updateActive();
     setButtons(false);
+    setStopButtonStopping(false);
     setStatus('', '未连接');
 
     if (clearPartials) {
@@ -975,6 +986,16 @@
     `.trim();
   }
 
+  function buildDownloadSvg() {
+    return `
+      <svg class="media-download-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M12 3v10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        <path d="M8.5 10.5L12 13.9l3.5-3.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        <path d="M5 15v3a3 3 0 0 0 3 3h8a3 3 0 0 0 3-3v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    `.trim();
+  }
+
   function setFavUi(btn, on) {
     if (!btn) return;
     const isOn = Boolean(on);
@@ -1419,7 +1440,9 @@
     const downloadBtn = document.createElement('button');
     downloadBtn.type = 'button';
     downloadBtn.className = 'media-download-btn';
-    downloadBtn.textContent = '下载';
+    downloadBtn.setAttribute('aria-label', '下载');
+    downloadBtn.title = '下载';
+    downloadBtn.innerHTML = buildDownloadSvg();
     downloadBtn.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1723,7 +1746,9 @@
       const downloadBtn = document.createElement('button');
       downloadBtn.type = 'button';
       downloadBtn.className = 'media-download-btn';
-      downloadBtn.textContent = '下载';
+      downloadBtn.setAttribute('aria-label', '下载');
+      downloadBtn.title = '下载';
+      downloadBtn.innerHTML = buildDownloadSvg();
       downloadBtn.addEventListener('click', async (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -2086,20 +2111,31 @@
       pendingFallbackTimer = null;
     }
 
+    if (stopRequested) {
+      toast('正在停止中...', 'info');
+      return;
+    }
+
     refreshMediaSettingsFromControls();
     persistMediaSettings();
 
+    // Immediate UI feedback (even for soft stop)
+    setStopButtonStopping(true, '停止中...');
+
     const strategy = String(mediaSettings.stop_strategy || 'soft_timeout');
     if (strategy === 'immediate') {
+      toast('已请求停止（强停）', 'info');
       await forceStopNow({ reason: 'user', clearPartials: true });
       return;
     }
 
     if (strategy === 'soft') {
+      toast('已请求停止（软停）', 'info');
       await requestSoftStop({ reason: 'user', withTimeout: false });
       return;
     }
 
+    toast('已请求停止（软停）', 'info');
     await requestSoftStop({ reason: 'user', withTimeout: true });
   }
 
@@ -2135,6 +2171,8 @@
       if (!isOpen) {
         advancedPanel.style.left = '';
         advancedPanel.style.top = '';
+        advancedPanel.style.width = '';
+        advancedPanel.style.maxWidth = '';
         advancedPanel.style.visibility = '';
       }
     };
@@ -2142,26 +2180,32 @@
     const positionPopover = () => {
       if (!isOpen) return;
 
-      const rect = advancedToggle.getBoundingClientRect();
+      const toggleRect = advancedToggle.getBoundingClientRect();
+      const composerEl = advancedToggle.closest('.media-composer') || document.querySelector('.media-composer');
+      const composerRect = composerEl ? composerEl.getBoundingClientRect() : toggleRect;
+
       const viewportW = window.innerWidth;
       const viewportH = window.innerHeight;
 
-      // Make it measurable (without flashing)
+      // Anchor: right edge of the composer (not the toggle button), so it never covers Stop/Advanced buttons.
+      const left = composerRect.right + GAP_PX;
+      const availableW = Math.max(0, viewportW - left - PADDING_PX);
+
+      // Make it measurable (without flashing) and apply width constraint before measuring height.
       advancedPanel.hidden = false;
       advancedPanel.style.visibility = 'hidden';
       advancedPanel.style.left = '0px';
       advancedPanel.style.top = '0px';
 
-      const popW = advancedPanel.offsetWidth || 380;
+      const desiredW = 420;
+      const effectiveW = Math.max(0, Math.min(desiredW, availableW));
+      advancedPanel.style.width = `${Math.round(effectiveW)}px`;
+      advancedPanel.style.maxWidth = `${Math.round(availableW)}px`;
+
       const popH = advancedPanel.offsetHeight || 320;
 
-      // No flip: always prefer right side, but clamp to viewport if overflow
-      let left = rect.right + GAP_PX;
-      left = Math.min(left, viewportW - popW - PADDING_PX);
-      left = Math.max(PADDING_PX, left);
-
-      // Try align to button top; clamp to keep it visible
-      let top = rect.top;
+      // Try align to toggle top; clamp to keep it visible
+      let top = toggleRect.top;
       top = Math.min(top, viewportH - popH - PADDING_PX);
       top = Math.max(PADDING_PX, top);
 
