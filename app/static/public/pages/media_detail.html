@@ -57,7 +57,9 @@
         <img id="detailImage" class="media-detail-image" alt="media-detail" />
 
         <div id="detailStageVideoWrap" class="media-detail-stage-video" hidden>
-          <video id="detailStageVideo" controls preload="metadata" playsinline webkit-playsinline></video>
+          <div id="detailStageVideoFrame" class="media-detail-stage-video-frame">
+            <video id="detailStageVideo" controls preload="metadata" playsinline webkit-playsinline></video>
+          </div>
         </div>
       </section>
 
@@ -217,6 +219,20 @@
         <button id="detailVideoClearBtn" class="geist-button-outline w-full" type="button">
           清空视频列表
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Clear confirm modal (T6/T7) -->
+  <div id="detailVideoClearModal" class="md-modal-overlay" hidden aria-hidden="true">
+    <div class="md-modal-backdrop" data-role="backdrop"></div>
+    <div class="md-modal-content" role="dialog" aria-modal="true" aria-labelledby="detailVideoClearModalTitle"
+      aria-describedby="detailVideoClearModalDesc" tabindex="-1">
+      <div class="md-modal-title" id="detailVideoClearModalTitle">清空视频列表</div>
+      <div class="md-modal-desc" id="detailVideoClearModalDesc">确定清空视频列表吗？该操作不会影响已生成的视频文件本身。</div>
+      <div class="md-modal-actions">
+        <button id="detailVideoClearModalCancel" class="geist-button-outline md-modal-btn" type="button">取消</button>
+        <button id="detailVideoClearModalConfirm" class="geist-button-danger md-modal-btn" type="button">确认清空</button>
       </div>
     </div>
   </div>

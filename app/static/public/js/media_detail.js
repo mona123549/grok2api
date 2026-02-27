@@ -2,6 +2,7 @@
   const detailImage = document.getElementById('detailImage');
   const emptyState = document.getElementById('mediaDetailEmpty');
   const stageVideoWrap = document.getElementById('detailStageVideoWrap');
+  const stageVideoFrame = document.getElementById('detailStageVideoFrame');
   const stageVideo = document.getElementById('detailStageVideo');
 
   const imageUrlText = document.getElementById('imageUrlText');
@@ -32,6 +33,11 @@
   const detailVideoEmpty = document.getElementById('detailVideoEmpty');
   const detailVideoResults = document.getElementById('detailVideoResults');
   const detailVideoClearBtn = document.getElementById('detailVideoClearBtn');
+
+  // T6/T7: clear confirm modal
+  const detailVideoClearModal = document.getElementById('detailVideoClearModal');
+  const detailVideoClearModalCancel = document.getElementById('detailVideoClearModalCancel');
+  const detailVideoClearModalConfirm = document.getElementById('detailVideoClearModalConfirm');
 
   const detailVideoRatioSelect = document.getElementById('detailVideoRatioSelect');
   const detailVideoParallelSelect = document.getElementById('detailVideoParallelSelect');
@@ -1228,11 +1234,139 @@
     });
   }
 
+  let clearConfirmResolve = null;
+  let clearConfirmOpen = false;
+  let clearConfirmLastActive = null;
+  let clearConfirmBound = false;
+
+  function setClearConfirmModalOpen(open) {
+    if (!detailVideoClearModal) return;
+    const on = Boolean(open);
+    clearConfirmOpen = on;
+    detailVideoClearModal.hidden = !on;
+    detailVideoClearModal.setAttribute('aria-hidden', on ? 'false' : 'true');
+  }
+
+  function closeClearConfirmModal(result) {
+    if (!clearConfirmOpen) return;
+    setClearConfirmModalOpen(false);
+
+    const resolve = clearConfirmResolve;
+    clearConfirmResolve = null;
+
+    // Restore focus (best-effort)
+    const restoreTarget = clearConfirmLastActive;
+    clearConfirmLastActive = null;
+    if (restoreTarget && restoreTarget.focus) {
+      try {
+        restoreTarget.focus({ preventScroll: true });
+      } catch (e) {
+        try {
+          restoreTarget.focus();
+        } catch (err) {
+          // ignore
+        }
+      }
+    }
+
+    if (typeof resolve === 'function') resolve(Boolean(result));
+  }
+
+  function bindClearConfirmModalOnce() {
+    if (clearConfirmBound) return;
+    clearConfirmBound = true;
+
+    if (detailVideoClearModalCancel) {
+      detailVideoClearModalCancel.addEventListener('click', () => closeClearConfirmModal(false));
+    }
+    if (detailVideoClearModalConfirm) {
+      detailVideoClearModalConfirm.addEventListener('click', () => closeClearConfirmModal(true));
+    }
+
+    if (detailVideoClearModal) {
+      // Click backdrop to close
+      detailVideoClearModal.addEventListener('click', (e) => {
+        const target = e && e.target ? e.target : null;
+        if (!(target instanceof HTMLElement)) return;
+        if (target.getAttribute('data-role') === 'backdrop') {
+          closeClearConfirmModal(false);
+        }
+      });
+    }
+
+    // Esc to close
+    document.addEventListener('keydown', (e) => {
+      if (!clearConfirmOpen) return;
+      if (!e) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeClearConfirmModal(false);
+      }
+    });
+  }
+
+  function openClearConfirmModal() {
+    bindClearConfirmModalOnce();
+
+    if (!detailVideoClearModal) {
+      toast('弹层初始化失败（缺少 modal DOM）', 'error');
+      return Promise.resolve(false);
+    }
+
+    // If opened again, resolve previous as cancelled.
+    if (clearConfirmResolve) {
+      try {
+        clearConfirmResolve(false);
+      } catch (e) {
+        // ignore
+      }
+      clearConfirmResolve = null;
+    }
+
+    clearConfirmLastActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setClearConfirmModalOpen(true);
+
+    // Focus cancel by default (or dialog container)
+    setTimeout(() => {
+      if (detailVideoClearModalCancel && detailVideoClearModalCancel.focus) {
+        try {
+          detailVideoClearModalCancel.focus({ preventScroll: true });
+          return;
+        } catch (e) {
+          // ignore
+        }
+        try {
+          detailVideoClearModalCancel.focus();
+          return;
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      const content = detailVideoClearModal.querySelector('.md-modal-content');
+      if (content && content instanceof HTMLElement && content.focus) {
+        try {
+          content.focus({ preventScroll: true });
+        } catch (e) {
+          try {
+            content.focus();
+          } catch (err) {
+            // ignore
+          }
+        }
+      }
+    }, 0);
+
+    return new Promise((resolve) => {
+      clearConfirmResolve = resolve;
+    });
+  }
+
   function bindDetailVideoClearButton() {
     if (!detailVideoClearBtn) return;
 
     detailVideoClearBtn.addEventListener('click', async () => {
-      const ok = window.confirm('确定清空视频列表吗？该操作不会影响已生成的视频文件本身。');
+      const ok = await openClearConfirmModal();
       if (!ok) return;
 
       // Stop running tasks first (best-effort), then clear UI/state
@@ -1389,9 +1523,49 @@
   let currentStageVideoUrl = '';
   let stageAutoplayWarned = false;
 
+  function resetStageAspectRatio() {
+    if (!stageVideoFrame) return;
+    try {
+      stageVideoFrame.style.removeProperty('--md-stage-aspect');
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function applyStageAspectRatioFromVideoMetadata(videoEl) {
+    if (!stageVideoFrame || !videoEl) return;
+    let w = 0;
+    let h = 0;
+    try {
+      w = Number(videoEl.videoWidth || 0);
+      h = Number(videoEl.videoHeight || 0);
+    } catch (e) {
+      w = 0;
+      h = 0;
+    }
+    if (!(w > 0 && h > 0)) return;
+
+    try {
+      stageVideoFrame.style.setProperty('--md-stage-aspect', `${Math.round(w)} / ${Math.round(h)}`);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function bindStageAspectRatioAuto() {
+    if (!stageVideo || !stageVideoFrame) return;
+
+    stageVideo.addEventListener('loadedmetadata', () => {
+      applyStageAspectRatioFromVideoMetadata(stageVideo);
+    });
+  }
+
   function clearStageVideo() {
     currentStageVideoUrl = '';
     if (stageVideoWrap) stageVideoWrap.hidden = true;
+
+    resetStageAspectRatio();
+
     if (stageVideo) {
       try {
         stageVideo.pause();
@@ -1504,6 +1678,10 @@
 
     // Keep image visible behind; stage video is an overlay preview
     stageVideoWrap.hidden = false;
+
+    // Reset aspect while loading; will be updated on loadedmetadata.
+    resetStageAspectRatio();
+
     stageVideo.src = finalUrl;
     try {
       stageVideo.load();
@@ -1726,6 +1904,9 @@
 
     // Stage playback preference (muted/volume)
     bindStagePlaybackPrefPersistence();
+
+    // T9 (optional): auto aspect-ratio for stage frame based on loadedmetadata
+    bindStageAspectRatioAuto();
 
     // T8 bindings (video composer)
     bindDetailVideoAdvancedToggle();
