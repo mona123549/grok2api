@@ -13,11 +13,15 @@
   --md-header-h: 56px;
   --md-sticky-gap: 12px;
 
-  /* Desktop sticky layout */
+  /* Desktop sticky layout (legacy; will be disabled on desktop in this plan) */
   --md-sticky-top: calc(var(--md-header-h) + var(--md-sticky-gap));
 
-  /* Keep space for bottom fixed composer (aligned with .public-page main padding-bottom) */
+  /* Keep space for bottom fixed composer */
   --md-composer-reserve: 220px;
+
+  /* Composer visual footprint: reserve + its bottom offset */
+  --md-composer-gap: 24px;
+  --md-composer-footprint: calc(var(--md-composer-reserve) + var(--md-composer-gap));
 }
 
 html[data-theme='dark'] {
@@ -58,47 +62,150 @@ html[data-theme='dark'] {
   }
 }
 
-/* Desktop: sticky stage + sticky right panel; left column becomes the main scroll container */
+/* Desktop: Grok-like model
+   - Whole page is locked to 100dvh (no body/main scrolling)
+   - Three columns fill the remaining viewport height
+   - Only left filmstrip is scrollable (right panel only uses minimal internal scroll as fallback)
+*/
 @media (min-width: 1101px) {
+  html {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  body.public-page {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  /* main participates in body flex layout; lock it as the non-scroll viewport content area */
+  .public-page main {
+    box-sizing: border-box;
+    height: calc(100vh - var(--md-header-h));
+    height: calc(100dvh - var(--md-header-h));
+    max-height: calc(100vh - var(--md-header-h));
+    max-height: calc(100dvh - var(--md-header-h));
+    overflow: hidden;
+    overscroll-behavior: none;
+
+    /* Desktop should not reserve scroll space; we compute layout height explicitly */
+    padding-bottom: 0 !important;
+
+    /* Override Tailwind's py-* so stage can remain visually centered */
+    padding-top: var(--md-sticky-gap) !important;
+  }
+
+  .media-detail-layout {
+    /* Fill remaining space while keeping fixed bottom composer unobstructed */
+    height: calc(100% - var(--md-composer-footprint));
+    max-height: calc(100% - var(--md-composer-footprint));
+    align-items: stretch;
+  }
+
+  /* Disable legacy sticky architecture entirely */
+  .media-detail-video-surface,
+  .media-detail-stage,
+  .media-detail-panel {
+    position: relative;
+    top: auto;
+    height: 100%;
+    max-height: none;
+    min-height: 0;
+  }
+
+  /* Left column: the only primary scroll container */
   .media-detail-video-surface {
-    position: sticky;
-    top: var(--md-sticky-top);
-    height: calc(100vh - var(--md-sticky-top) - var(--md-composer-reserve));
-    max-height: calc(100vh - var(--md-sticky-top) - var(--md-composer-reserve));
     overflow: hidden;
 
     display: flex;
     flex-direction: column;
-    min-height: 0;
   }
 
   .media-detail-video-results {
     flex: 1;
     min-height: 0; /* critical for flex overflow scrolling */
     overflow: auto;
-    padding-right: 4px; /* space for scrollbar */
+
+    /* Remove the "scrollbar gutter" */
+    padding-right: 0;
+
     scroll-snap-type: y proximity;
+
+    /* Hide scrollbars cross-browser while keeping scroll */
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge legacy */
   }
 
+  .media-detail-video-results::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  /* Optional: thin invisible wheel sensor (Grok-like) */
+  .media-detail-video-column {
+    position: relative;
+  }
+
+  .media-detail-left-scroll-sensor {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+
+    /* Try to sit in the grid gap between left column and stage */
+    right: -9px;
+    width: 14px;
+
+    z-index: 6;
+    background: transparent;
+    pointer-events: auto;
+
+    /* Avoid browser gestures competing with wheel delegation */
+    touch-action: none;
+  }
+
+  /* Stage: occupy full column height so internal flex centering is true centering */
   .media-detail-stage {
-    position: sticky;
-    top: var(--md-sticky-top);
-    height: calc(100vh - var(--md-sticky-top) - var(--md-composer-reserve));
-    max-height: calc(100vh - var(--md-sticky-top) - var(--md-composer-reserve));
-    min-height: 0; /* override base min-height to avoid sticky jumping */
+    overflow: hidden;
   }
 
   .media-detail-image {
     max-height: 100%;
   }
 
+  /* Right panel: avoid being scroll-first; only meta area scrolls if it must */
   .media-detail-panel {
-    position: sticky;
-    top: var(--md-sticky-top);
-    height: calc(100vh - var(--md-sticky-top) - var(--md-composer-reserve));
-    max-height: calc(100vh - var(--md-sticky-top) - var(--md-composer-reserve));
-    overflow: auto;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Sticky inside the panel is unnecessary now; keep it in normal flow */
+  .media-detail-action-group {
+    position: relative;
+    top: auto;
+  }
+
+  .media-detail-meta {
+    flex: 1;
     min-height: 0;
+    overflow: auto;
+
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge legacy */
+  }
+
+  .media-detail-meta::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  /* T4 strategy: keep composer height stable on desktop */
+  .media-detail-video-prompt {
+    resize: none;
   }
 }
 

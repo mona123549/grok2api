@@ -44,8 +44,11 @@
             <div class="empty-subtitle">在下方输入提示词（可选）并点击“生成视频”</div>
           </div>
 
-          <div id="detailVideoResults" class="media-detail-video-results"></div>
+          <div id="detailVideoResults" class="media-detail-video-results" tabindex="0"></div>
         </section>
+
+        <!-- Desktop: thin invisible wheel sensor to scroll left filmstrip (Grok-like) -->
+        <div id="detailLeftScrollSensor" class="media-detail-left-scroll-sensor" aria-hidden="true"></div>
       </aside>
 
       <section class="media-detail-stage" aria-label="Media detail image stage">

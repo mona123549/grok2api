@@ -32,6 +32,7 @@
   const detailVideoStatusText = document.getElementById('detailVideoStatusText');
   const detailVideoEmpty = document.getElementById('detailVideoEmpty');
   const detailVideoResults = document.getElementById('detailVideoResults');
+  const detailLeftScrollSensor = document.getElementById('detailLeftScrollSensor');
   const detailVideoClearBtn = document.getElementById('detailVideoClearBtn');
 
   // T6/T7: clear confirm modal
@@ -452,6 +453,50 @@
         unbindGlobalListeners();
       }
     });
+  }
+
+  function bindLeftScrollSensorWheel() {
+    if (!detailLeftScrollSensor || !detailVideoResults) return;
+
+    const mql = (window.matchMedia && typeof window.matchMedia === 'function')
+      ? window.matchMedia('(min-width: 1101px)')
+      : null;
+
+    const isDesktop = () => {
+      if (mql) return Boolean(mql.matches);
+      return window.innerWidth >= 1101;
+    };
+
+    detailLeftScrollSensor.addEventListener('wheel', (event) => {
+      if (!isDesktop()) return;
+      if (!event) return;
+
+      // Avoid interfering with browser zoom gesture (Ctrl+wheel)
+      if (event.ctrlKey) return;
+
+      const dxRaw = Number(event.deltaX || 0);
+      const dyRaw = Number(event.deltaY || 0);
+
+      // Prefer not hijacking trackpad horizontal scroll
+      if (Math.abs(dxRaw) > Math.abs(dyRaw)) return;
+      if (!dyRaw) return;
+
+      const scale =
+        (event.deltaMode === 1) ? 16 : // lines -> px (best-effort)
+          (event.deltaMode === 2) ? Math.max(120, window.innerHeight) : // pages -> px
+            1;
+
+      const dy = dyRaw * scale;
+
+      const scroller = detailVideoResults;
+      const prev = scroller.scrollTop;
+
+      scroller.scrollTop = prev + dy;
+
+      // Always prevent default to avoid any scroll chaining/overscroll effects.
+      event.preventDefault();
+      event.stopPropagation();
+    }, { passive: false });
   }
 
   function extractParentPostIdFromText(text) {
@@ -1910,6 +1955,7 @@
 
     // T8 bindings (video composer)
     bindDetailVideoAdvancedToggle();
+    bindLeftScrollSensorWheel();
     bindDetailVideoDownloads();
     bindDetailVideoClearButton();
     setVideoButtons(false);
