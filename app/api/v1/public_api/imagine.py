@@ -244,15 +244,30 @@ def _parse_sse_chunk(chunk: str) -> Optional[Dict[str, Any]]:
     return payload
 
 
-async def _new_session(prompt: str, aspect_ratio: str, nsfw: Optional[bool]) -> str:
+async def _new_session(
+    prompt: str,
+    aspect_ratio: str,
+    nsfw: Optional[bool],
+    n: Optional[int] = None,
+) -> str:
     task_id = uuid.uuid4().hex
     now = time.time()
+
+    safe_n = 6
+    if n is not None:
+        try:
+            safe_n = int(n)
+        except Exception:
+            safe_n = 6
+    safe_n = max(1, min(6, safe_n))
+
     async with _IMAGINE_SESSIONS_LOCK:
         await _clean_sessions(now)
         _IMAGINE_SESSIONS[task_id] = {
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
             "nsfw": nsfw,
+            "n": safe_n,
             "created_at": now,
         }
     return task_id
@@ -339,7 +354,7 @@ async def public_imagine_ws(websocket: WebSocket):
         run_task = None
         stop_event.clear()
 
-    async def _run(prompt: str, aspect_ratio: str, nsfw: Optional[bool]):
+    async def _run(prompt: str, aspect_ratio: str, nsfw: Optional[bool], n: int):
         model_id = "grok-imagine-1.0"
         model_info = ModelService.get(model_id)
         if not model_info or not model_info.is_image:
@@ -354,6 +369,7 @@ async def public_imagine_ws(websocket: WebSocket):
 
         token_mgr = await get_token_manager()
         run_id = uuid.uuid4().hex
+        safe_n = max(1, min(6, int(n or 6)))
 
         await _send(
             {
@@ -362,92 +378,92 @@ async def public_imagine_ws(websocket: WebSocket):
                 "prompt": prompt,
                 "aspect_ratio": aspect_ratio,
                 "run_id": run_id,
+                "n": safe_n,
             }
         )
 
-        while not stop_event.is_set():
-            try:
-                await token_mgr.reload_if_stale()
-                token = None
-                for pool_name in ModelService.pool_candidates_for_model(
-                    model_info.model_id
-                ):
-                    token = token_mgr.get_token(pool_name)
-                    if token:
-                        break
+        try:
+            await token_mgr.reload_if_stale()
+            token = None
+            for pool_name in ModelService.pool_candidates_for_model(model_info.model_id):
+                token = token_mgr.get_token(pool_name)
+                if token:
+                    break
 
-                if not token:
-                    await _send(
-                        {
-                            "type": "error",
-                            "message": "No available tokens. Please try again later.",
-                            "code": "rate_limit_exceeded",
-                        }
-                    )
-                    await asyncio.sleep(2)
-                    continue
-
-                result = await ImageGenerationService().generate(
-                    token_mgr=token_mgr,
-                    token=token,
-                    model_info=model_info,
-                    prompt=prompt,
-                    n=6,
-                    response_format="b64_json",
-                    size="1024x1024",
-                    aspect_ratio=aspect_ratio,
-                    stream=True,
-                    enable_nsfw=nsfw,
-                )
-                if result.stream:
-                    async for chunk in result.data:
-                        payload = _parse_sse_chunk(chunk)
-                        if not payload:
-                            continue
-                        if isinstance(payload, dict):
-                            payload.setdefault("run_id", run_id)
-                            parent_post_id = _extract_parent_post_id_from_payload(
-                                payload
-                            )
-                            if parent_post_id:
-                                await _bind_image_token(parent_post_id, token)
-                        await _send(payload)
-                else:
-                    images = [img for img in result.data if img and img != "error"]
-                    if images:
-                        for img_b64 in images:
-                            await _send(
-                                {
-                                    "type": "image",
-                                    "b64_json": img_b64,
-                                    "created_at": int(time.time() * 1000),
-                                    "aspect_ratio": aspect_ratio,
-                                    "run_id": run_id,
-                                }
-                            )
-                    else:
-                        await _send(
-                            {
-                                "type": "error",
-                                "message": "Image generation returned empty data.",
-                                "code": "empty_image",
-                            }
-                        )
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.warning(f"Imagine stream error: {e}")
+            if not token:
                 await _send(
                     {
                         "type": "error",
-                        "message": str(e),
-                        "code": "internal_error",
+                        "message": "No available tokens. Please try again later.",
+                        "code": "rate_limit_exceeded",
                     }
                 )
-                await asyncio.sleep(1.5)
+                return
 
-        await _send({"type": "status", "status": "stopped", "run_id": run_id})
+            # Run exactly once (one generate call), then stop.
+            result = await ImageGenerationService().generate(
+                token_mgr=token_mgr,
+                token=token,
+                model_info=model_info,
+                prompt=prompt,
+                n=safe_n,
+                response_format="b64_json",
+                size="1024x1024",
+                aspect_ratio=aspect_ratio,
+                stream=True,
+                enable_nsfw=nsfw,
+            )
+            if result.stream:
+                async for chunk in result.data:
+                    if stop_event.is_set():
+                        break
+                    payload = _parse_sse_chunk(chunk)
+                    if not payload:
+                        continue
+                    if isinstance(payload, dict):
+                        payload.setdefault("run_id", run_id)
+                        parent_post_id = _extract_parent_post_id_from_payload(payload)
+                        if parent_post_id:
+                            await _bind_image_token(parent_post_id, token)
+                    await _send(payload)
+            else:
+                images = [img for img in result.data if img and img != "error"]
+                if images:
+                    for img_b64 in images:
+                        if stop_event.is_set():
+                            break
+                        await _send(
+                            {
+                                "type": "image",
+                                "b64_json": img_b64,
+                                "created_at": int(time.time() * 1000),
+                                "aspect_ratio": aspect_ratio,
+                                "run_id": run_id,
+                            }
+                        )
+                else:
+                    await _send(
+                        {
+                            "type": "error",
+                            "message": "Image generation returned empty data.",
+                            "code": "empty_image",
+                        }
+                    )
+
+        except asyncio.CancelledError:
+            # Stop requested (client stop), still try to send stopped.
+            pass
+        except Exception as e:
+            logger.warning(f"Imagine stream error: {e}")
+            await _send(
+                {
+                    "type": "error",
+                    "message": str(e),
+                    "code": "internal_error",
+                }
+            )
+        finally:
+            await _send({"type": "status", "status": "stopped", "run_id": run_id})
 
     try:
         while True:
@@ -470,7 +486,11 @@ async def public_imagine_ws(websocket: WebSocket):
 
             action = payload.get("type")
             if action == "start":
+                session = await _get_session(session_id) if session_id else None
+
                 prompt = str(payload.get("prompt") or "").strip()
+                if not prompt and session:
+                    prompt = str(session.get("prompt") or "").strip()
                 if not prompt:
                     await _send(
                         {
@@ -480,12 +500,29 @@ async def public_imagine_ws(websocket: WebSocket):
                         }
                     )
                     continue
-                aspect_ratio = _normalize_imagine_ratio(payload.get("aspect_ratio"))
+
+                ratio_raw = payload.get("aspect_ratio")
+                if (not ratio_raw) and session:
+                    ratio_raw = session.get("aspect_ratio")
+                aspect_ratio = _normalize_imagine_ratio(ratio_raw)
+
                 nsfw = payload.get("nsfw")
+                if nsfw is None and session:
+                    nsfw = session.get("nsfw")
                 if nsfw is not None:
                     nsfw = bool(nsfw)
+
+                raw_n = payload.get("n")
+                if raw_n is None and session:
+                    raw_n = session.get("n")
+                try:
+                    n = int(raw_n) if raw_n is not None else 6
+                except Exception:
+                    n = 6
+                n = max(1, min(6, n))
+
                 await _stop_run()
-                run_task = asyncio.create_task(_run(prompt, aspect_ratio, nsfw))
+                run_task = asyncio.create_task(_run(prompt, aspect_ratio, nsfw, n))
             elif action == "stop":
                 await _stop_run()
             else:
@@ -520,6 +557,7 @@ async def public_imagine_sse(
     task_id: str = Query(""),
     prompt: str = Query(""),
     aspect_ratio: str = Query("2:3"),
+    n: int = Query(6),
 ):
     """Imagine 图片瀑布流（SSE 兜底）"""
     session = None
@@ -542,6 +580,10 @@ async def public_imagine_sse(
         prompt = str(session.get("prompt") or "").strip()
         ratio = _normalize_imagine_ratio(session.get("aspect_ratio"))
         nsfw = session.get("nsfw")
+        try:
+            n = int(session.get("n") or 6)
+        except Exception:
+            n = 6
     else:
         prompt = (prompt or "").strip()
         if not prompt:
@@ -550,6 +592,11 @@ async def public_imagine_sse(
         nsfw = request.query_params.get("nsfw")
         if nsfw is not None:
             nsfw = str(nsfw).lower() in ("1", "true", "yes", "on")
+        try:
+            n = int(n or 6)
+        except Exception:
+            n = 6
+    n = max(1, min(6, n))
 
     async def event_stream():
         try:
@@ -566,89 +613,91 @@ async def public_imagine_sse(
             run_id = uuid.uuid4().hex
 
             yield (
-                f"data: {orjson.dumps({'type': 'status', 'status': 'running', 'prompt': prompt, 'aspect_ratio': ratio, 'run_id': run_id}).decode()}\n\n"
+                f"data: {orjson.dumps({'type': 'status', 'status': 'running', 'prompt': prompt, 'aspect_ratio': ratio, 'run_id': run_id, 'n': n}).decode()}\n\n"
             )
 
-            while True:
-                if await request.is_disconnected():
-                    logger.info(
-                        "Imagine SSE interrupted by client disconnect: "
-                        f"task_id={task_id or '-'}, run_id={run_id}"
-                    )
-                    break
-                if task_id:
-                    session_alive = await _get_session(task_id)
-                    if not session_alive:
+            if await request.is_disconnected():
+                return
+            if task_id:
+                session_alive = await _get_session(task_id)
+                if not session_alive:
+                    return
+
+            try:
+                await token_mgr.reload_if_stale()
+                token = None
+                for pool_name in ModelService.pool_candidates_for_model(model_info.model_id):
+                    token = token_mgr.get_token(pool_name)
+                    if token:
                         break
 
-                try:
-                    await token_mgr.reload_if_stale()
-                    token = None
-                    for pool_name in ModelService.pool_candidates_for_model(
-                        model_info.model_id
-                    ):
-                        token = token_mgr.get_token(pool_name)
-                        if token:
-                            break
-
-                    if not token:
-                        yield (
-                            f"data: {orjson.dumps({'type': 'error', 'message': 'No available tokens. Please try again later.', 'code': 'rate_limit_exceeded'}).decode()}\n\n"
-                        )
-                        await asyncio.sleep(2)
-                        continue
-
-                    result = await ImageGenerationService().generate(
-                        token_mgr=token_mgr,
-                        token=token,
-                        model_info=model_info,
-                        prompt=prompt,
-                        n=6,
-                        response_format="b64_json",
-                        size="1024x1024",
-                        aspect_ratio=ratio,
-                        stream=True,
-                        enable_nsfw=nsfw,
+                if not token:
+                    yield (
+                        f"data: {orjson.dumps({'type': 'error', 'message': 'No available tokens. Please try again later.', 'code': 'rate_limit_exceeded'}).decode()}\n\n"
                     )
-                    if result.stream:
-                        async for chunk in result.data:
-                            payload = _parse_sse_chunk(chunk)
-                            if not payload:
-                                continue
-                            if isinstance(payload, dict):
-                                payload.setdefault("run_id", run_id)
-                                parent_post_id = _extract_parent_post_id_from_payload(
-                                    payload
-                                )
-                                if parent_post_id:
-                                    await _bind_image_token(parent_post_id, token)
+                    return
+
+                # Run exactly once (one generate call), then stop.
+                result = await ImageGenerationService().generate(
+                    token_mgr=token_mgr,
+                    token=token,
+                    model_info=model_info,
+                    prompt=prompt,
+                    n=n,
+                    response_format="b64_json",
+                    size="1024x1024",
+                    aspect_ratio=ratio,
+                    stream=True,
+                    enable_nsfw=nsfw,
+                )
+                if result.stream:
+                    async for chunk in result.data:
+                        if await request.is_disconnected():
+                            break
+                        if task_id:
+                            session_alive = await _get_session(task_id)
+                            if not session_alive:
+                                break
+                        payload = _parse_sse_chunk(chunk)
+                        if not payload:
+                            continue
+                        if isinstance(payload, dict):
+                            payload.setdefault("run_id", run_id)
+                            parent_post_id = _extract_parent_post_id_from_payload(payload)
+                            if parent_post_id:
+                                await _bind_image_token(parent_post_id, token)
+                        yield f"data: {orjson.dumps(payload).decode()}\n\n"
+                else:
+                    images = [img for img in result.data if img and img != "error"]
+                    if images:
+                        for img_b64 in images:
+                            if await request.is_disconnected():
+                                break
+                            if task_id:
+                                session_alive = await _get_session(task_id)
+                                if not session_alive:
+                                    break
+                            sequence += 1
+                            payload = {
+                                "type": "image",
+                                "b64_json": img_b64,
+                                "sequence": sequence,
+                                "created_at": int(time.time() * 1000),
+                                "aspect_ratio": ratio,
+                                "run_id": run_id,
+                            }
                             yield f"data: {orjson.dumps(payload).decode()}\n\n"
                     else:
-                        images = [img for img in result.data if img and img != "error"]
-                        if images:
-                            for img_b64 in images:
-                                sequence += 1
-                                payload = {
-                                    "type": "image",
-                                    "b64_json": img_b64,
-                                    "sequence": sequence,
-                                    "created_at": int(time.time() * 1000),
-                                    "aspect_ratio": ratio,
-                                    "run_id": run_id,
-                                }
-                                yield f"data: {orjson.dumps(payload).decode()}\n\n"
-                        else:
-                            yield (
-                                f"data: {orjson.dumps({'type': 'error', 'message': 'Image generation returned empty data.', 'code': 'empty_image'}).decode()}\n\n"
-                            )
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.warning(f"Imagine SSE error: {e}")
-                    yield (
-                        f"data: {orjson.dumps({'type': 'error', 'message': str(e), 'code': 'internal_error'}).decode()}\n\n"
-                    )
-                    await asyncio.sleep(1.5)
+                        yield (
+                            f"data: {orjson.dumps({'type': 'error', 'message': 'Image generation returned empty data.', 'code': 'empty_image'}).decode()}\n\n"
+                        )
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"Imagine SSE error: {e}")
+                yield (
+                    f"data: {orjson.dumps({'type': 'error', 'message': str(e), 'code': 'internal_error'}).decode()}\n\n"
+                )
 
             yield (
                 f"data: {orjson.dumps({'type': 'status', 'status': 'stopped', 'run_id': run_id}).decode()}\n\n"
@@ -677,6 +726,7 @@ class ImagineStartRequest(BaseModel):
     prompt: str
     aspect_ratio: Optional[str] = "2:3"
     nsfw: Optional[bool] = None
+    n: Optional[int] = None
 
 
 @router.post("/imagine/start", dependencies=[Depends(verify_public_key)])
@@ -685,7 +735,7 @@ async def public_imagine_start(data: ImagineStartRequest):
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
     ratio = _normalize_imagine_ratio(data.aspect_ratio)
-    task_id = await _new_session(prompt, ratio, data.nsfw)
+    task_id = await _new_session(prompt, ratio, data.nsfw, data.n)
     return {"task_id": task_id, "aspect_ratio": ratio}
 
 

@@ -8,6 +8,7 @@
   const nsfwSelect = document.getElementById('nsfwSelect');
 
   const maxImagesInput = document.getElementById('maxImagesInput');
+  const imagesPerTaskSelect = document.getElementById('imagesPerTaskSelect');
   const stopStrategySelect = document.getElementById('stopStrategySelect');
   const softStopTimeoutInput = document.getElementById('softStopTimeoutInput');
   const softStopGraceInput = document.getElementById('softStopGraceInput');
@@ -72,7 +73,8 @@
     nsfw: true,
     mode_preference: 'auto',
     max_images_per_run: 6,
-    stop_strategy: 'soft_timeout', // immediate | soft | soft_timeout
+    images_per_task: 1,
+    stop_strategy: 'immediate', // immediate | soft | soft_timeout
     soft_stop_timeout_sec: 12,
     soft_stop_grace_ms: 800,
 
@@ -182,6 +184,7 @@
         if (typeof parsed.mode_preference === 'string') merged.mode_preference = parsed.mode_preference;
 
         if (Number.isFinite(parsed.max_images_per_run)) merged.max_images_per_run = clampInt(parsed.max_images_per_run, 1, 99, 6);
+        if (Number.isFinite(parsed.images_per_task)) merged.images_per_task = clampInt(parsed.images_per_task, 1, 6, 1);
         if (typeof parsed.stop_strategy === 'string') merged.stop_strategy = parsed.stop_strategy;
         if (Number.isFinite(parsed.soft_stop_timeout_sec)) merged.soft_stop_timeout_sec = clampInt(parsed.soft_stop_timeout_sec, 1, 120, 12);
         if (Number.isFinite(parsed.soft_stop_grace_ms)) merged.soft_stop_grace_ms = clampInt(parsed.soft_stop_grace_ms, 0, 10000, 800);
@@ -212,7 +215,11 @@
 
     // normalize values
     if (!['auto', 'ws', 'sse'].includes(merged.mode_preference)) merged.mode_preference = 'auto';
-    if (!['immediate', 'soft', 'soft_timeout'].includes(merged.stop_strategy)) merged.stop_strategy = 'soft_timeout';
+    if (!['immediate', 'soft', 'soft_timeout'].includes(merged.stop_strategy)) merged.stop_strategy = 'immediate';
+
+    const allowedImagesPerTask = [1, 2, 3, 4, 6];
+    merged.images_per_task = clampInt(merged.images_per_task, 1, 6, 1);
+    if (!allowedImagesPerTask.includes(merged.images_per_task)) merged.images_per_task = 1;
 
     return merged;
   }
@@ -241,6 +248,12 @@
 
     if (maxImagesInput) {
       maxImagesInput.value = String(clampInt(mediaSettings.max_images_per_run, 1, 99, 6));
+    }
+    if (imagesPerTaskSelect && Number.isFinite(mediaSettings.images_per_task)) {
+      const value = String(clampInt(mediaSettings.images_per_task, 1, 6, 1));
+      if ([...imagesPerTaskSelect.options].some(opt => opt.value === value)) {
+        imagesPerTaskSelect.value = value;
+      }
     }
     if (stopStrategySelect && typeof mediaSettings.stop_strategy === 'string') {
       stopStrategySelect.value = mediaSettings.stop_strategy;
@@ -275,6 +288,11 @@
 
     if (maxImagesInput) {
       mediaSettings.max_images_per_run = clampInt(maxImagesInput.value, 1, 99, DEFAULT_SETTINGS.max_images_per_run);
+    }
+    if (imagesPerTaskSelect) {
+      const allowed = [1, 2, 3, 4, 6];
+      const raw = clampInt(imagesPerTaskSelect.value, 1, 6, DEFAULT_SETTINGS.images_per_task);
+      mediaSettings.images_per_task = allowed.includes(raw) ? raw : DEFAULT_SETTINGS.images_per_task;
     }
     if (stopStrategySelect) {
       const v = stopStrategySelect.value;
@@ -440,8 +458,12 @@
     if (!isRunning) return false;
     if (stopRequested) return false;
     if (inFlightTasks >= desiredConcurrent) return false;
-    // avoid overshoot: final + in-flight must be < target
-    if ((runFinalCount + inFlightTasks) >= runTargetFinal) return false;
+
+    // avoid overshoot: estimate remaining final images based on "images per task"
+    const perTask = clampInt(mediaSettings.images_per_task, 1, 6, 1);
+    const projected = runFinalCount + (inFlightTasks * perTask);
+    if (projected >= runTargetFinal) return false;
+
     return true;
   }
 
@@ -514,7 +536,14 @@
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
 
-    const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled);
+    // Choose effective n for this task: respect settings, and also avoid doing unnecessary work
+    // when max_images_per_run is smaller than images_per_task (or near completion).
+    const perTaskSetting = clampInt(mediaSettings.images_per_task, 1, 6, 1);
+    const reserved = inFlightTasks * perTaskSetting;
+    const remainingForThisTask = Math.max(1, runTargetFinal - runFinalCount - reserved);
+    const effectiveN = clampInt(Math.min(perTaskSetting, remainingForThisTask), 1, 6, 1);
+
+    const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled, effectiveN);
     if (!taskId) {
       throw new Error('Missing task id');
     }
@@ -526,10 +555,31 @@
     if (connectionMode === 'sse') {
       const url = buildSseUrl(taskId, sseConnections.length, rawPublicKey);
       const es = new EventSource(url);
+      let sseCompleted = false;
 
       es.onopen = () => updateActive();
-      es.onmessage = (event) => handleMessage(event.data, { runNonce, taskId });
+      es.onmessage = (event) => {
+        // SSE now ends after one generate; treat server "stopped" as completion, not an error.
+        const text = event && typeof event.data === 'string' ? event.data : '';
+        if (text) {
+          try {
+            const msg = JSON.parse(text);
+            if (msg && msg.type === 'status' && msg.status === 'stopped') {
+              sseCompleted = true;
+              try {
+                es.close();
+              } catch (e) {
+                // ignore
+              }
+            }
+          } catch (e) {
+            // ignore
+          }
+        }
+        handleMessage(text, { runNonce, taskId });
+      };
       es.onerror = () => {
+        if (sseCompleted) return;
         updateActive();
         const progressed = markTaskFailed(taskId);
         if (progressed) ensureDesiredTasks();
@@ -723,14 +773,15 @@
     }
   }
 
-  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled) {
+  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled, imagesPerTask) {
+    const n = clampInt(imagesPerTask, 1, 6, 1);
     const res = await fetch('/v1/public/imagine/start', {
       method: 'POST',
       headers: {
         ...buildAuthHeaders(authHeader),
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ prompt, aspect_ratio: ratio, nsfw: nsfwEnabled })
+      body: JSON.stringify({ prompt, aspect_ratio: ratio, nsfw: nsfwEnabled, n })
     });
     if (!res.ok) {
       const text = await res.text();
@@ -1900,17 +1951,26 @@
       if (!payload || !imageId) {
         return;
       }
+
       const isFinal = data.type === 'image_generation.completed' || data.stage === 'final';
+
+      // T11: after reaching max, ignore extra final messages to avoid rendering over-limit images
+      if (isFinal && runFinalCount >= runTargetFinal) {
+        return;
+      }
+
+      const existing = imageId ? streamImageMap.get(String(imageId)) : null;
+      const wasFinal = Boolean(existing && String(existing.dataset.isFinal || '0') === '1');
+
       const kept = upsertStreamImage(payload, data, imageId, isFinal);
 
-      if (isFinal && ctx && ctx.taskId) {
-        const progressed = markTaskDone(ctx.taskId);
+      const nowItem = imageId ? streamImageMap.get(String(imageId)) : null;
+      const isNowFinal = Boolean(isFinal && nowItem && String(nowItem.dataset.isFinal || '0') === '1');
+      const becameFinal = Boolean(isNowFinal && !wasFinal);
 
-        // final 被过滤（太小）时，不计数但补任务直到凑够 N 张
-        if (progressed && kept) {
-          runFinalCount += 1;
-          updateCount(runFinalCount);
-        }
+      if (becameFinal && kept) {
+        runFinalCount += 1;
+        updateCount(runFinalCount);
 
         if (runFinalCount >= runTargetFinal) {
           const strategy = String(mediaSettings.stop_strategy || 'soft_timeout');
@@ -1923,23 +1983,24 @@
           }
           return;
         }
-
-        if (progressed) {
-          ensureDesiredTasks();
-        }
       }
+
       return;
     }
 
     if (data.type === 'image') {
       touchStreamActivity();
+
+      // T11: after reaching max, ignore extra final messages
+      if (runFinalCount >= runTargetFinal) {
+        return;
+      }
+
       const kept = appendImage(data.b64_json, data);
-      if (ctx && ctx.taskId) {
-        const progressed = markTaskDone(ctx.taskId);
-        if (progressed && kept) {
-          runFinalCount += 1;
-          updateCount(runFinalCount);
-        }
+      if (kept) {
+        runFinalCount += 1;
+        updateCount(runFinalCount);
+
         if (runFinalCount >= runTargetFinal) {
           const strategy = String(mediaSettings.stop_strategy || 'soft_timeout');
           if (strategy === 'immediate') {
@@ -1951,8 +2012,8 @@
           }
           return;
         }
-        if (progressed) ensureDesiredTasks();
       }
+
       return;
     }
 
@@ -1966,6 +2027,17 @@
           return;
         }
         setStatus('', '已停止');
+
+        // Task completion should be based on "stopped" (not on first final image),
+        // so inFlight accounting remains correct when n > 1.
+        if (ctx && ctx.taskId) {
+          const progressed = markTaskDone(ctx.taskId);
+          if (progressed) {
+            ensureDesiredTasks();
+          } else if (stopRequested && inFlightTasks <= 0) {
+            scheduleSoftStopIdleClose();
+          }
+        }
       }
       return;
     }
@@ -1984,6 +2056,8 @@
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
 
+    // For /media we always create session via /imagine/start (which stores n),
+    // so no need to send n again (avoid accidental override).
     const payload = {
       type: 'start',
       prompt,
@@ -2173,6 +2247,7 @@
         advancedPanel.style.top = '';
         advancedPanel.style.width = '';
         advancedPanel.style.maxWidth = '';
+        advancedPanel.style.maxHeight = '';
         advancedPanel.style.visibility = '';
       }
     };
@@ -2196,6 +2271,7 @@
       advancedPanel.style.visibility = 'hidden';
       advancedPanel.style.left = '0px';
       advancedPanel.style.top = '0px';
+      advancedPanel.style.maxHeight = '';
 
       const desiredW = 420;
       const effectiveW = Math.max(0, Math.min(desiredW, availableW));
@@ -2204,10 +2280,15 @@
 
       const popH = advancedPanel.offsetHeight || 320;
 
-      // Try align to toggle top; clamp to keep it visible
-      let top = toggleRect.top;
-      top = Math.min(top, viewportH - popH - PADDING_PX);
-      top = Math.max(PADDING_PX, top);
+      // Bottom-align to composer bottom; clamp top and use maxHeight to keep bottom fixed.
+      const composerBottom = Math.min(viewportH - PADDING_PX, Math.max(PADDING_PX, composerRect.bottom));
+
+      const desiredTop = composerBottom - popH;
+      const maxTop = Math.max(PADDING_PX, composerBottom - PADDING_PX);
+      const top = Math.min(Math.max(desiredTop, PADDING_PX), maxTop);
+
+      const maxH = Math.max(0, composerBottom - top);
+      advancedPanel.style.maxHeight = `${Math.round(maxH)}px`;
 
       advancedPanel.style.left = `${Math.round(left)}px`;
       advancedPanel.style.top = `${Math.round(top)}px`;
@@ -2528,6 +2609,7 @@
     };
 
     if (maxImagesInput) maxImagesInput.addEventListener('change', onPersist);
+    if (imagesPerTaskSelect) imagesPerTaskSelect.addEventListener('change', onPersist);
     if (stopStrategySelect) stopStrategySelect.addEventListener('change', onPersist);
     if (softStopTimeoutInput) softStopTimeoutInput.addEventListener('change', onPersist);
     if (softStopGraceInput) softStopGraceInput.addEventListener('change', onPersist);

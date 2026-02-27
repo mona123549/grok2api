@@ -120,11 +120,22 @@
         </div>
 
         <div class="media-advanced-field">
+          <label class="field-label" for="imagesPerTaskSelect">单次生成张数</label>
+          <select id="imagesPerTaskSelect" class="geist-input">
+            <option value="1" selected>1 张/任务</option>
+            <option value="2">2 张/任务</option>
+            <option value="3">3 张/任务</option>
+            <option value="4">4 张/任务</option>
+            <option value="6">6 张/任务</option>
+          </select>
+        </div>
+
+        <div class="media-advanced-field">
           <label class="field-label" for="stopStrategySelect">停止策略</label>
           <select id="stopStrategySelect" class="geist-input">
-            <option value="soft_timeout" selected>软停止 + 超时强停（推荐）</option>
-            <option value="soft">软停止（等待 in-flight）</option>
-            <option value="immediate">立即停止（强停）</option>
+            <option value="immediate" selected>立即强停</option>
+            <option value="soft">软停止</option>
+            <option value="soft_timeout">软停+超时强停</option>
           </select>
         </div>
 
