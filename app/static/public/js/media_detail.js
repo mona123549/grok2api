@@ -268,6 +268,7 @@
         detailVideoAdvancedPanel.style.top = '';
         detailVideoAdvancedPanel.style.width = '';
         detailVideoAdvancedPanel.style.maxWidth = '';
+        detailVideoAdvancedPanel.style.maxHeight = '';
         detailVideoAdvancedPanel.style.visibility = '';
       }
     };
@@ -282,6 +283,7 @@
       const viewportW = window.innerWidth;
       const viewportH = window.innerHeight;
 
+      // Anchor: right edge of the composer (not the toggle button), so it never covers Stop/Advanced buttons.
       const left = composerRect.right + GAP_PX;
       const availableW = Math.max(0, viewportW - left - PADDING_PX);
 
@@ -290,6 +292,7 @@
       detailVideoAdvancedPanel.style.visibility = 'hidden';
       detailVideoAdvancedPanel.style.left = '0px';
       detailVideoAdvancedPanel.style.top = '0px';
+      detailVideoAdvancedPanel.style.maxHeight = '';
 
       const desiredW = 420;
       const effectiveW = Math.max(0, Math.min(desiredW, availableW));
@@ -298,10 +301,15 @@
 
       const popH = detailVideoAdvancedPanel.offsetHeight || 320;
 
-      // Align to toggle top; clamp to viewport
-      let top = toggleRect.top;
-      top = Math.min(top, viewportH - popH - PADDING_PX);
-      top = Math.max(PADDING_PX, top);
+      // Bottom-align to composer bottom; clamp top and use maxHeight to keep bottom fixed.
+      const composerBottom = Math.min(viewportH - PADDING_PX, Math.max(PADDING_PX, composerRect.bottom));
+
+      const desiredTop = composerBottom - popH;
+      const maxTop = Math.max(PADDING_PX, composerBottom - PADDING_PX);
+      const top = Math.min(Math.max(desiredTop, PADDING_PX), maxTop);
+
+      const maxH = Math.max(0, composerBottom - top);
+      detailVideoAdvancedPanel.style.maxHeight = `${Math.round(maxH)}px`;
 
       detailVideoAdvancedPanel.style.left = `${Math.round(left)}px`;
       detailVideoAdvancedPanel.style.top = `${Math.round(top)}px`;
@@ -381,6 +389,63 @@
     if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
     if (raw.startsWith('/')) return `${window.location.origin}${raw}`;
     return '';
+  }
+
+  function normalizeLocalVideoFileUrl(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+
+    const marker = '/v1/files/video/';
+
+    // Prefer URL parser (handles query/hash reliably)
+    try {
+      const u = new URL(raw, window.location.origin);
+      const idx = u.pathname.indexOf(marker);
+      if (idx < 0) return raw;
+
+      let suffix = u.pathname.slice(idx + marker.length);
+      suffix = suffix.replace(/^\/+/, '');
+
+      // best-effort decode
+      try {
+        suffix = decodeURIComponent(suffix);
+      } catch (e) {
+        // ignore
+      }
+
+      // Flatten path segments to match backend cache naming
+      suffix = suffix.replace(/[\\/]+/g, '-');
+
+      // Evidence-driven compatibility: some upstream urls end with an extra "I" (e.g. ".mp4I")
+      if (/\.mp4i$/i.test(suffix)) {
+        suffix = suffix.slice(0, -1);
+      }
+
+      // Keep absolute origin if caller provided absolute URL; otherwise keep it relative
+      const base = (raw.startsWith('http://') || raw.startsWith('https://')) ? u.origin : '';
+      return `${base}${marker}${suffix}`;
+    } catch (e) {
+      // Fallback: string operations
+      const i = raw.indexOf(marker);
+      if (i < 0) return raw;
+
+      let suffix = raw.slice(i + marker.length);
+      suffix = suffix.split('#')[0].split('?')[0];
+      suffix = suffix.replace(/^\/+/, '');
+
+      try {
+        suffix = decodeURIComponent(suffix);
+      } catch (err) {
+        // ignore
+      }
+
+      suffix = suffix.replace(/[\\/]+/g, '-');
+      if (/\.mp4i$/i.test(suffix)) {
+        suffix = suffix.slice(0, -1);
+      }
+
+      return `${marker}${suffix}`;
+    }
   }
 
   function buildImaginePublicUrl(parentPostId) {
@@ -552,11 +617,16 @@
     if (!item) return;
     const open = item.querySelector('[data-role="open"]');
     const download = item.querySelector('[data-role="download"]');
-    item.dataset.videoUrl = String(url || '').trim();
+
+    const raw = String(url || '').trim();
+    const normalized = normalizeLocalVideoFileUrl(raw);
+    const effective = normalized || raw;
+
+    item.dataset.videoUrl = effective;
 
     if (open) {
-      if (url) {
-        open.href = url;
+      if (effective) {
+        open.href = effective;
         open.classList.remove('hidden');
       } else {
         open.classList.add('hidden');
@@ -564,15 +634,19 @@
       }
     }
     if (download) {
-      download.disabled = !url;
-      download.dataset.url = url || '';
+      download.disabled = !effective;
+      download.dataset.url = effective || '';
     }
 
-    applyVideoFavoriteStateToItem(item, url);
+    // Keep compatibility for older favorites keyed by raw url
+    applyVideoFavoriteStateToItem(item, effective);
+    if (raw && raw !== effective) {
+      applyVideoFavoriteStateToItem(item, raw);
+    }
 
     // Auto-select the first completed video (best-effort) so stage can preview it.
-    if (url && !currentStageVideoUrl) {
-      showStageVideo(url);
+    if (effective && !currentStageVideoUrl) {
+      showStageVideo(effective);
       if (item) {
         const all = document.querySelectorAll('.media-detail-video-item.is-selected');
         all.forEach((el) => el.classList.remove('is-selected'));
@@ -606,6 +680,13 @@
       const source = videoEl.querySelector('source');
       if (source && source.getAttribute('src')) url = source.getAttribute('src');
       else if (videoEl.getAttribute('src')) url = videoEl.getAttribute('src');
+
+      const normalized = normalizeLocalVideoFileUrl(url);
+      if (normalized && normalized !== url) {
+        if (source && source.getAttribute('src')) source.setAttribute('src', normalized);
+        else if (videoEl.getAttribute('src')) videoEl.setAttribute('src', normalized);
+        url = normalized;
+      }
     }
     bindVideoLinks(item, url);
     setVideoItemStatus(item, '完成', 'done');
@@ -614,7 +695,9 @@
   function renderVideoUrl(item, url) {
     const body = item && item.querySelector ? item.querySelector('.media-detail-video-item-body') : null;
     if (!body) return;
-    const safe = String(url || '').trim();
+    const raw = String(url || '').trim();
+    const normalized = normalizeLocalVideoFileUrl(raw);
+    const safe = normalized || raw;
     body.innerHTML = `<video controls preload="metadata" playsinline webkit-playsinline><source src="${safe}" type="video/mp4"></video>`;
     bindVideoLinks(item, safe);
     setVideoItemStatus(item, '完成', 'done');
@@ -1153,11 +1236,14 @@
     if (!stageVideo || !stageVideoWrap) return;
     if (!clean) return;
 
-    currentStageVideoUrl = clean;
+    const normalized = normalizeLocalVideoFileUrl(clean);
+    const finalUrl = normalized || clean;
+
+    currentStageVideoUrl = finalUrl;
 
     // Keep image visible behind; stage video is an overlay preview
     stageVideoWrap.hidden = false;
-    stageVideo.src = clean;
+    stageVideo.src = finalUrl;
     try {
       stageVideo.load();
     } catch (e) {

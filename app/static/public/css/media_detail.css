@@ -233,7 +233,8 @@ html[data-theme='dark'] .media-detail-meta-item {
   z-index: 5;
 
   border: 1px solid var(--md-border);
-  border-radius: 999px;
+  /* Avoid "pill" shape when buttons wrap into multiple rows */
+  border-radius: 16px;
   background: var(--md-actions-bg);
   backdrop-filter: blur(12px);
   box-shadow: var(--md-shadow);
@@ -252,6 +253,7 @@ html[data-theme='dark'] .media-detail-meta-item {
     top: 8px;
     gap: 8px;
     padding: 10px;
+    border-radius: 14px;
   }
 }
 
@@ -261,6 +263,12 @@ html[data-theme='dark'] .media-detail-meta-item {
   background: var(--md-border);
   display: inline-block;
   margin: 0 2px;
+}
+
+@media (max-width: 900px) {
+  .media-detail-actions-sep {
+    display: none;
+  }
 }
 
 .media-detail-action-btn {
@@ -537,6 +545,8 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
 }
 
 .media-detail-composer-meta {
+  /* Move video status above the textarea row for a tighter composer layout */
+  order: -1;
   display: inline-flex;
   align-items: center;
   gap: 8px;

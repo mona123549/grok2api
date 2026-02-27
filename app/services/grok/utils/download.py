@@ -10,7 +10,7 @@ import hashlib
 import os
 from pathlib import Path
 from typing import List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import aiofiles
 from curl_cffi.requests import AsyncSession
@@ -50,22 +50,48 @@ class DownloadService:
     async def resolve_url(
         self, path_or_url: str, token: str, media_type: str = "image"
     ) -> str:
+        """
+        Resolve remote asset url/path into a playable url.
+
+        When app_url is set, we download into local cache and return /v1/files/...
+        IMPORTANT: local cache filename is flattened based on the normalized path (including query),
+        so the returned url must preserve the same normalized path (with ? encoded into the path)
+        to avoid "cached but 404" mismatches.
+        """
         asset_url = path_or_url
-        path = path_or_url
         if path_or_url.startswith("http"):
-            parsed = urlparse(path_or_url)
-            path = parsed.path or ""
             asset_url = path_or_url
         else:
             if not path_or_url.startswith("/"):
                 path_or_url = f"/{path_or_url}"
-            path = path_or_url
             asset_url = f"https://assets.grok.com{path_or_url}"
+
+        # Normalize path exactly like download_file() so cache key and file route match.
+        normalized_path = self._normalize_path(asset_url)
+
+        # Evidence-driven compatibility:
+        # Some upstream urls may include a trailing "I" (e.g. "...generated_video_hd.mp4I"),
+        # which makes /v1/files/video/... 404. Treat ".mp4I" as ".mp4".
+        if media_type == "video":
+            if "?" in normalized_path:
+                base, q = normalized_path.split("?", 1)
+                if base.lower().endswith(".mp4i"):
+                    base = base[:-1]
+                normalized_path = f"{base}?{q}" if q else base
+            else:
+                if normalized_path.lower().endswith(".mp4i"):
+                    normalized_path = normalized_path[:-1]
 
         app_url = get_config("app.app_url")
         if app_url:
-            await self.download_file(asset_url, token, media_type)
-            return f"{app_url.rstrip('/')}/v1/files/{media_type}{path}"
+            # Force download using the normalized path (including query) so cached filename matches.
+            await self.download_file(f"https://assets.grok.com{normalized_path}", token, media_type)
+
+            # Encode ? into the path segment so the server can unquote() back to the cache filename.
+            encoded_path = quote(normalized_path, safe="/-_.()")
+            return f"{app_url.rstrip('/')}/v1/files/{media_type}{encoded_path}"
+
+        # Fallback: return original remote url (best-effort)
         return asset_url
 
     async def render_image(
