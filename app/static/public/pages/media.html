@@ -86,117 +86,105 @@
             aria-expanded="false" aria-controls="advancedPanel">高级</button>
         </div>
       </div>
+    </div>
+  </div>
 
-      <div id="advancedPanel" class="media-advanced" hidden>
-        <div class="media-advanced-grid">
-          <div class="media-advanced-field">
-            <label class="field-label" for="ratioSelect">宽高比</label>
-            <select id="ratioSelect" class="geist-input">
-              <option value="2:3" selected>2:3 竖图</option>
-              <option value="1:1">1:1 方图</option>
-              <option value="3:2">3:2 横图</option>
-              <option value="16:9">16:9 宽屏</option>
-              <option value="9:16">9:16 竖屏</option>
-            </select>
-          </div>
-
-          <div class="media-advanced-field">
-            <label class="field-label" for="concurrentSelect">并发数量</label>
-            <select id="concurrentSelect" class="geist-input">
-              <option value="1" selected>1 个任务</option>
-              <option value="2">2 个任务</option>
-              <option value="3">3 个任务</option>
-            </select>
-          </div>
-
-          <div class="media-advanced-field">
-            <label class="field-label" for="maxImagesInput">本轮最多生成</label>
-            <input id="maxImagesInput" class="geist-input" type="number" inputmode="numeric" min="1" max="99" step="1"
-              value="6" />
-          </div>
-
-          <div class="media-advanced-field">
-            <label class="field-label" for="stopStrategySelect">停止策略</label>
-            <select id="stopStrategySelect" class="geist-input">
-              <option value="soft_timeout" selected>软停止 + 超时强停（推荐）</option>
-              <option value="soft">软停止（等待 in-flight）</option>
-              <option value="immediate">立即停止（强停）</option>
-            </select>
-          </div>
-
-          <div class="media-advanced-field">
-            <label class="field-label" for="softStopTimeoutInput">软停超时（秒）</label>
-            <input id="softStopTimeoutInput" class="geist-input" type="number" inputmode="numeric" min="1" max="120"
-              step="1" value="12" />
-          </div>
-
-          <div class="media-advanced-field">
-            <label class="field-label" for="softStopGraceInput">软停宽限（毫秒）</label>
-            <input id="softStopGraceInput" class="geist-input" type="number" inputmode="numeric" min="0" max="10000"
-              step="50" value="800" />
-          </div>
-
-          <div class="media-advanced-field">
-            <label class="field-label" for="nsfwSelect">是否 NSFW</label>
-            <select id="nsfwSelect" class="geist-input">
-              <option value="true">开启</option>
-              <option value="false">关闭</option>
-            </select>
-          </div>
-
-          <div class="media-advanced-field">
-            <div class="field-label">连接模式</div>
-            <div class="mode-switch" role="group" aria-label="Connection mode">
-              <button class="mode-btn" data-mode="auto" type="button">Auto</button>
-              <button class="mode-btn" data-mode="ws" type="button">WS</button>
-              <button class="mode-btn" data-mode="sse" type="button">SSE</button>
-            </div>
-            <div class="media-advanced-hint">Auto 会优先 WS，失败回退 SSE。</div>
-          </div>
-
-          <div class="media-advanced-field">
-            <div class="field-label">自动跟随</div>
-            <label class="media-toggle-row">
-              <input id="autoFollowToggle" type="checkbox" />
-              <span class="media-toggle-track" aria-hidden="true"></span>
-              <span class="media-toggle-label">滚动到最新</span>
-            </label>
-          </div>
-
-          <div class="media-advanced-field">
-            <div class="field-label">反向新增</div>
-            <label class="media-toggle-row">
-              <input id="reverseInsertToggle" type="checkbox" />
-              <span class="media-toggle-track" aria-hidden="true"></span>
-              <span class="media-toggle-label">最新显示在上方</span>
-            </label>
-          </div>
-
-          <div class="media-advanced-field">
-            <div class="field-label">自动过滤</div>
-            <label class="media-toggle-row">
-              <input id="autoFilterToggle" type="checkbox" />
-              <span class="media-toggle-track" aria-hidden="true"></span>
-              <span class="media-toggle-label">过滤小图（minBytes）</span>
-            </label>
-          </div>
-
-          <div class="media-advanced-field media-save-field">
-            <div class="field-label">自动保存</div>
-            <label class="media-toggle-row">
-              <input id="autoSaveToggle" type="checkbox" />
-              <span class="media-toggle-track" aria-hidden="true"></span>
-              <span class="media-toggle-label">生成后自动保存</span>
-            </label>
-            <button id="selectSaveFolderBtn" class="geist-button-outline media-folder-btn" type="button" disabled>
-              选择保存目录（可选）
-              <span id="saveFolderPath" class="media-folder-path">未选择（将使用浏览器下载）</span>
-            </button>
-            <div id="saveFolderHint" class="media-advanced-hint">
-              仅部分浏览器支持目录写入；不会修改浏览器默认下载路径。
-            </div>
-          </div>
+  <!-- Advanced settings popover (moved out of composer flow) -->
+  <div id="advancedPopover" class="media-advanced-popover-root">
+    <div id="advancedPanel" class="media-advanced" hidden>
+      <div class="media-advanced-grid">
+        <div class="media-advanced-field">
+          <label class="field-label" for="ratioSelect">宽高比</label>
+          <select id="ratioSelect" class="geist-input">
+            <option value="2:3" selected>2:3 竖图</option>
+            <option value="1:1">1:1 方图</option>
+            <option value="3:2">3:2 横图</option>
+            <option value="16:9">16:9 宽屏</option>
+            <option value="9:16">9:16 竖屏</option>
+          </select>
         </div>
+
+        <div class="media-advanced-field">
+          <label class="field-label" for="concurrentSelect">并发数量</label>
+          <select id="concurrentSelect" class="geist-input">
+            <option value="1" selected>1 个任务</option>
+            <option value="2">2 个任务</option>
+            <option value="3">3 个任务</option>
+          </select>
+        </div>
+
+        <div class="media-advanced-field">
+          <label class="field-label" for="maxImagesInput">本轮最多生成</label>
+          <input id="maxImagesInput" class="geist-input" type="number" inputmode="numeric" min="1" max="99" step="1"
+            value="6" />
+        </div>
+
+        <div class="media-advanced-field">
+          <label class="field-label" for="stopStrategySelect">停止策略</label>
+          <select id="stopStrategySelect" class="geist-input">
+            <option value="soft_timeout" selected>软停止 + 超时强停（推荐）</option>
+            <option value="soft">软停止（等待 in-flight）</option>
+            <option value="immediate">立即停止（强停）</option>
+          </select>
+        </div>
+
+        <div class="media-advanced-field">
+          <label class="field-label" for="softStopTimeoutInput">软停超时（秒）</label>
+          <input id="softStopTimeoutInput" class="geist-input" type="number" inputmode="numeric" min="1" max="120"
+            step="1" value="12" />
+        </div>
+
+        <div class="media-advanced-field">
+          <label class="field-label" for="softStopGraceInput">软停宽限（毫秒）</label>
+          <input id="softStopGraceInput" class="geist-input" type="number" inputmode="numeric" min="0" max="10000"
+            step="50" value="800" />
+        </div>
+
+        <div class="media-advanced-field">
+          <label class="field-label" for="nsfwSelect">是否 NSFW</label>
+          <select id="nsfwSelect" class="geist-input">
+            <option value="true">开启</option>
+            <option value="false">关闭</option>
+          </select>
+        </div>
+
+        <div class="media-advanced-field">
+          <div class="field-label">连接模式</div>
+          <div class="mode-switch" role="group" aria-label="Connection mode">
+            <button class="mode-btn" data-mode="auto" type="button">Auto</button>
+            <button class="mode-btn" data-mode="ws" type="button">WS</button>
+            <button class="mode-btn" data-mode="sse" type="button">SSE</button>
+          </div>
+          <div class="media-advanced-hint">Auto 会优先 WS，失败回退 SSE。</div>
+        </div>
+
+        <div class="media-advanced-field">
+          <div class="field-label">自动跟随</div>
+          <label class="media-toggle-row">
+            <input id="autoFollowToggle" type="checkbox" />
+            <span class="media-toggle-track" aria-hidden="true"></span>
+            <span class="media-toggle-label">滚动到最新</span>
+          </label>
+        </div>
+
+        <div class="media-advanced-field">
+          <div class="field-label">反向新增</div>
+          <label class="media-toggle-row">
+            <input id="reverseInsertToggle" type="checkbox" />
+            <span class="media-toggle-track" aria-hidden="true"></span>
+            <span class="media-toggle-label">最新显示在上方</span>
+          </label>
+        </div>
+
+        <div class="media-advanced-field">
+          <div class="field-label">自动过滤</div>
+          <label class="media-toggle-row">
+            <input id="autoFilterToggle" type="checkbox" />
+            <span class="media-toggle-track" aria-hidden="true"></span>
+            <span class="media-toggle-label">过滤小图（minBytes）</span>
+          </label>
+        </div>
+
       </div>
     </div>
   </div>

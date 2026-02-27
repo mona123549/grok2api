@@ -6,8 +6,8 @@
   --md-border: var(--border);
   --md-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
   --md-actions-bg: rgba(255, 255, 255, 0.92);
-  /* Keep action bar centered and not expanding on very wide screens */
-  --md-workbench-width: 980px;
+  /* Align with /media composer width for consistent visual baseline */
+  --md-workbench-width: 780px;
 }
 
 html[data-theme='dark'] {
@@ -31,7 +31,7 @@ html[data-theme='dark'] {
 
 .media-detail-layout {
   width: 100%;
-  max-width: 1400px;
+  max-width: 1280px;
   margin: 0 auto;
 
   display: grid;

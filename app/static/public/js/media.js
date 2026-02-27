@@ -40,6 +40,7 @@
 
   const advancedToggle = document.getElementById('advancedToggle');
   const advancedPanel = document.getElementById('advancedPanel');
+  const advancedPopoverRoot = document.getElementById('advancedPopover');
 
   let wsConnections = [];
   let sseConnections = [];
@@ -1814,20 +1815,8 @@
       }
     }
 
-    // Auto-save on final (once per item)
-    if (isFinal && autoSaveToggle && autoSaveToggle.checked && item) {
-      const saved = String(item.dataset.autoSaved || '0') === '1';
-      if (!saved) {
-        item.dataset.autoSaved = '1';
-        const url = String(item.dataset.imageUrl || '').trim();
-        const ext = inferExtFromUrl(url);
-        const filename = buildFilename(meta, streamSequence, ext);
-        autoSaveImageUrl(url, filename).catch(() => {
-          // allow retry on next update if needed
-          item.dataset.autoSaved = '0';
-        });
-      }
-    }
+    // Auto-save feature removed (disabled due to runaway downloads / browser freeze reports).
+    // Keep this block empty intentionally to prevent regressions.
 
     schedulePersistWaterfallSession();
     return { item, isNew };
@@ -2131,16 +2120,106 @@
   }
 
   function bindAdvancedToggle() {
-    if (!advancedToggle || !advancedPanel) return;
+    if (!advancedToggle || !advancedPanel || !advancedPopoverRoot) return;
+
+    let isOpen = false;
+
+    const GAP_PX = 8;
+    const PADDING_PX = 10;
+
     const setOpen = (open) => {
-      const isOpen = Boolean(open);
+      isOpen = Boolean(open);
       advancedToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
       advancedPanel.hidden = !isOpen;
+
+      if (!isOpen) {
+        advancedPanel.style.left = '';
+        advancedPanel.style.top = '';
+        advancedPanel.style.visibility = '';
+      }
     };
+
+    const positionPopover = () => {
+      if (!isOpen) return;
+
+      const rect = advancedToggle.getBoundingClientRect();
+      const viewportW = window.innerWidth;
+      const viewportH = window.innerHeight;
+
+      // Make it measurable (without flashing)
+      advancedPanel.hidden = false;
+      advancedPanel.style.visibility = 'hidden';
+      advancedPanel.style.left = '0px';
+      advancedPanel.style.top = '0px';
+
+      const popW = advancedPanel.offsetWidth || 380;
+      const popH = advancedPanel.offsetHeight || 320;
+
+      // No flip: always prefer right side, but clamp to viewport if overflow
+      let left = rect.right + GAP_PX;
+      left = Math.min(left, viewportW - popW - PADDING_PX);
+      left = Math.max(PADDING_PX, left);
+
+      // Try align to button top; clamp to keep it visible
+      let top = rect.top;
+      top = Math.min(top, viewportH - popH - PADDING_PX);
+      top = Math.max(PADDING_PX, top);
+
+      advancedPanel.style.left = `${Math.round(left)}px`;
+      advancedPanel.style.top = `${Math.round(top)}px`;
+      advancedPanel.style.visibility = 'visible';
+    };
+
+    const onDocClickCapture = (e) => {
+      if (!isOpen) return;
+      const target = e && e.target ? e.target : null;
+      if (!target) return;
+
+      // Ignore clicks inside popover or on the toggle button
+      if (advancedPanel.contains(target) || advancedToggle.contains(target)) return;
+
+      setOpen(false);
+    };
+
+    const onKeyDown = (e) => {
+      if (!isOpen) return;
+      if (!e) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setOpen(false);
+      }
+    };
+
+    const onWindowResize = () => positionPopover();
+    const onWindowScroll = () => positionPopover();
+
+    const bindGlobalListeners = () => {
+      document.addEventListener('click', onDocClickCapture, true);
+      document.addEventListener('keydown', onKeyDown);
+      window.addEventListener('resize', onWindowResize);
+      window.addEventListener('scroll', onWindowScroll, true);
+    };
+
+    const unbindGlobalListeners = () => {
+      document.removeEventListener('click', onDocClickCapture, true);
+      document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onWindowResize);
+      window.removeEventListener('scroll', onWindowScroll, true);
+    };
+
+    // Initial state
     setOpen(false);
+    unbindGlobalListeners();
+
     advancedToggle.addEventListener('click', () => {
-      const expanded = advancedToggle.getAttribute('aria-expanded') === 'true';
-      setOpen(!expanded);
+      const next = !isOpen;
+      setOpen(next);
+      if (next) {
+        bindGlobalListeners();
+        positionPopover();
+      } else {
+        unbindGlobalListeners();
+      }
     });
   }
 
@@ -2422,6 +2501,21 @@
 
   // Load & apply persisted settings before binding events
   mediaSettings = loadMediaSettings();
+
+  // Hard-disable auto-save even if older localStorage has it enabled.
+  // Reason: auto-save may trigger continuous downloads and freeze the browser.
+  if (mediaSettings && typeof mediaSettings === 'object') {
+    const wasEnabled = Boolean(mediaSettings.auto_save);
+    if (wasEnabled) {
+      mediaSettings.auto_save = false;
+      mediaSettings.auto_save_use_fs = false;
+      mediaSettings.auto_save_folder_label = '未启用';
+      directoryHandle = null;
+      useFileSystemAPI = false;
+      persistMediaSettings();
+    }
+  }
+
   applyMediaSettingsToControls();
   updateAutoSaveUiState();
 

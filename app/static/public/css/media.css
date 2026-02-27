@@ -256,7 +256,8 @@ html[data-theme='dark'] .media-item:hover {
 
 .media-download-btn {
   position: absolute;
-  top: 8px;
+  /* Under heart button */
+  top: 42px;
   right: 8px;
   height: 28px;
   padding: 0 10px;
@@ -276,8 +277,9 @@ html[data-theme='dark'] .media-item:hover {
 
 .media-fav-btn {
   position: absolute;
+  /* Top-right has highest priority */
   top: 8px;
-  right: 48px;
+  right: 8px;
   width: 28px;
   height: 28px;
   padding: 0;
@@ -291,10 +293,11 @@ html[data-theme='dark'] .media-item:hover {
   align-items: center;
   justify-content: center;
 
-  /* Always visible on desktop (do not rely on hover) */
-  opacity: 1;
-  pointer-events: auto;
-  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+  /* Desktop: show on hover only (like download button) */
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 0.16s ease, transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
   backdrop-filter: blur(8px);
 }
 
@@ -309,16 +312,26 @@ html[data-theme='dark'] .media-item:hover {
 }
 
 .media-item:hover .media-download-btn,
-.media-download-btn:focus {
+.media-item:hover .media-fav-btn,
+.media-item:hover .media-play-btn,
+.media-download-btn:focus,
+.media-fav-btn:focus,
+.media-play-btn:focus,
+.media-download-btn:focus-visible,
+.media-fav-btn:focus-visible,
+.media-play-btn:focus-visible {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
 }
 
 @media (max-width: 900px) {
-  .media-download-btn {
+  .media-download-btn,
+  .media-fav-btn,
+  .media-play-btn {
     opacity: 1;
     pointer-events: auto;
+    transform: translateY(0);
   }
 }
 
@@ -369,9 +382,11 @@ html[data-theme='dark'] .media-fav-btn.is-on {
   align-items: center;
   justify-content: center;
 
-  opacity: 1;
-  pointer-events: auto;
-  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+  /* Desktop: show on hover only */
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(2px);
+  transition: opacity 0.16s ease, transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
   backdrop-filter: blur(8px);
 }
 
@@ -562,6 +577,25 @@ html[data-theme='dark'] .media-item.selected .media-checkbox::after {
   background: var(--media-surface);
   padding: 8px;
   width: 100%;
+}
+
+/* Advanced settings popover (fixed, does not affect composer height) */
+#advancedPopover {
+  position: fixed;
+  inset: 0;
+  z-index: 60; /* above .media-composer (z-index: 30) */
+  pointer-events: none; /* allow click-through; click-outside handled by JS */
+}
+
+#advancedPopover #advancedPanel {
+  position: fixed;
+  width: 420px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  padding: 10px;
+  pointer-events: auto;
+  box-shadow: var(--media-shadow);
 }
 
 .media-advanced-grid {
