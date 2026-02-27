@@ -37,6 +37,13 @@ async def public_media():
     return FileResponse(STATIC_DIR / "public/pages/media.html")
 
 
+@router.get("/media/detail", include_in_schema=False)
+async def public_media_detail():
+    if not is_public_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(STATIC_DIR / "public/pages/media_detail.html")
+
+
 @router.get("/voice", include_in_schema=False)
 async def public_voice():
     if not is_public_enabled():

@@ -1,0 +1,113 @@
+<![CDATA[
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content">
+  <title>Grok2API - Media 单图详情</title>
+  <link rel="icon" href="/static/common/img/favicon/favicon.ico">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#fafafa">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Grok2API">
+  <link rel="apple-touch-icon" href="/static/public/pwa/apple-touch-icon.png">
+
+  <script src="/static/vendor/tailwind/tailwindcss-cdn.js"></script>
+  <link href="/static/vendor/geist/geist-sans.css" rel="stylesheet">
+  <link href="/static/vendor/geist/geist-mono.css" rel="stylesheet">
+  <script src="/static/common/js/theme.js?v=0.1.0"></script>
+
+  <link href="/static/common/css/common.css?v=0.3.8" rel="stylesheet">
+  <link href="/static/common/css/toast.css" rel="stylesheet">
+  <link href="/static/public/css/media_detail.css?v=0.1.0" rel="stylesheet">
+</head>
+
+<body class="public-page min-h-screen flex flex-col" style="background-color: var(--bg);">
+  <div id="toast-container" class="toast-container"></div>
+  <div id="app-header"></div>
+
+  <main class="flex-1 container mx-auto max-w-6xl px-4 sm:px-6 py-5 sm:py-8 fade-in">
+    <div class="media-detail-layout">
+      <section class="media-detail-stage" aria-label="Media detail image stage">
+        <div id="mediaDetailEmpty" class="media-detail-empty">
+          <div class="empty-title">未找到图片</div>
+          <div class="empty-subtitle">请从 Media 瀑布流点击图片进入详情页</div>
+        </div>
+
+        <img id="detailImage" class="media-detail-image" alt="media-detail" />
+      </section>
+
+      <aside class="media-detail-panel" aria-label="Media detail information">
+        <div class="media-detail-title-row">
+          <h2 class="media-detail-title">单图详情</h2>
+          <div class="media-detail-subtitle">显示图片地址/ID，并提供下载、复制与超分开关</div>
+        </div>
+
+        <div class="media-detail-meta">
+          <div class="media-detail-meta-item">
+            <div class="media-detail-meta-label">图片地址</div>
+            <div class="media-detail-meta-value mono" id="imageUrlText">-</div>
+            <button class="geist-button-outline media-detail-copy-btn" id="copyUrlBtn" type="button">复制地址</button>
+          </div>
+
+          <div class="media-detail-meta-item">
+            <div class="media-detail-meta-label">图片 ID / parentPostId</div>
+            <div class="media-detail-meta-value mono" id="imageIdText">-</div>
+            <button class="geist-button-outline media-detail-copy-btn" id="copyIdBtn" type="button">复制 ID</button>
+          </div>
+
+          <div class="media-detail-meta-item">
+            <div class="media-detail-meta-label">sourceImageUrl（尝试）</div>
+            <div class="media-detail-meta-value mono" id="sourceUrlText">-</div>
+            <button class="geist-button-outline media-detail-copy-btn" id="copySourceBtn" type="button">复制</button>
+          </div>
+
+          <div class="media-detail-meta-item">
+            <div class="media-detail-meta-label">Prompt</div>
+            <div class="media-detail-meta-value" id="promptText">-</div>
+            <button class="geist-button-outline media-detail-copy-btn" id="copyPromptBtn" type="button">复制</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <!-- Floating actions -->
+  <div class="media-detail-actions" role="region" aria-label="Media detail actions">
+    <button id="backBtn" class="media-detail-action-btn" type="button" aria-label="Back to media">
+      返回
+    </button>
+
+    <span class="media-detail-actions-sep"></span>
+
+    <button id="downloadBtn" class="media-detail-action-btn" type="button" aria-label="Download image">
+      下载
+    </button>
+
+    <button id="copyMainBtn" class="media-detail-action-btn" type="button" aria-label="Copy image url">
+      复制地址
+    </button>
+
+    <span class="media-detail-actions-sep"></span>
+
+    <button id="upscaleBtn" class="media-detail-action-btn" type="button" aria-pressed="false" aria-label="Upscale toggle">
+      超分：关
+    </button>
+  </div>
+
+  <div id="app-footer"></div>
+
+  <script src="/static/common/js/admin-auth.js?v=0.3.0"></script>
+  <script src="/static/common/js/public-header.js?v=0.3.3"></script>
+  <script src="/static/common/js/footer.js?v=0.3.0"></script>
+  <script src="/static/common/js/toast.js"></script>
+  <script src="/static/common/js/pwa.js?v=0.1.1"></script>
+  <script src="/static/public/js/media_detail.js?v=0.1.0"></script>
+</body>
+
+</html>
+]]>

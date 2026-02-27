@@ -51,6 +51,18 @@
       </div>
 
       <div class="media-surface">
+        <div class="media-surface-toolbar" aria-label="Media waterfall toolbar">
+          <button id="batchDownloadBtn" class="geist-button-outline media-batch-btn" type="button" title="批量下载">批量</button>
+
+          <div id="selectionToolbar" class="media-selection-toolbar hidden" role="region" aria-label="Media batch download toolbar">
+            <button id="toggleSelectAllBtn" class="geist-button-outline media-selection-btn" type="button">全选</button>
+            <button id="downloadSelectedBtn" class="geist-button media-selection-btn" type="button" disabled>
+              下载 <span id="selectedCount" class="media-selected-count">0</span>
+            </button>
+            <button id="exitSelectionModeBtn" class="geist-button-outline media-selection-btn" type="button">退出</button>
+          </div>
+        </div>
+
         <div id="emptyState" class="media-empty">
           <div class="empty-title">等待生成</div>
           <div class="empty-subtitle">在下方输入提示词并点击“开始”，结果会出现在这里</div>
@@ -97,6 +109,33 @@
           </div>
 
           <div class="media-advanced-field">
+            <label class="field-label" for="maxImagesInput">本轮最多生成</label>
+            <input id="maxImagesInput" class="geist-input" type="number" inputmode="numeric" min="1" max="99" step="1"
+              value="6" />
+          </div>
+
+          <div class="media-advanced-field">
+            <label class="field-label" for="stopStrategySelect">停止策略</label>
+            <select id="stopStrategySelect" class="geist-input">
+              <option value="soft_timeout" selected>软停止 + 超时强停（推荐）</option>
+              <option value="soft">软停止（等待 in-flight）</option>
+              <option value="immediate">立即停止（强停）</option>
+            </select>
+          </div>
+
+          <div class="media-advanced-field">
+            <label class="field-label" for="softStopTimeoutInput">软停超时（秒）</label>
+            <input id="softStopTimeoutInput" class="geist-input" type="number" inputmode="numeric" min="1" max="120"
+              step="1" value="12" />
+          </div>
+
+          <div class="media-advanced-field">
+            <label class="field-label" for="softStopGraceInput">软停宽限（毫秒）</label>
+            <input id="softStopGraceInput" class="geist-input" type="number" inputmode="numeric" min="0" max="10000"
+              step="50" value="800" />
+          </div>
+
+          <div class="media-advanced-field">
             <label class="field-label" for="nsfwSelect">是否 NSFW</label>
             <select id="nsfwSelect" class="geist-input">
               <option value="true">开启</option>
@@ -113,6 +152,46 @@
             </div>
             <div class="media-advanced-hint">Auto 会优先 WS，失败回退 SSE。</div>
           </div>
+
+          <div class="media-advanced-field">
+            <div class="field-label">自动跟随</div>
+            <label class="media-toggle-row">
+              <input id="autoFollowToggle" type="checkbox" />
+              <span class="media-toggle-track" aria-hidden="true"></span>
+              <span class="media-toggle-label">滚动到最新</span>
+            </label>
+          </div>
+
+          <div class="media-advanced-field">
+            <div class="field-label">反向新增</div>
+            <label class="media-toggle-row">
+              <input id="reverseInsertToggle" type="checkbox" />
+              <span class="media-toggle-track" aria-hidden="true"></span>
+              <span class="media-toggle-label">最新显示在上方</span>
+            </label>
+          </div>
+
+          <div class="media-advanced-field">
+            <div class="field-label">自动过滤</div>
+            <label class="media-toggle-row">
+              <input id="autoFilterToggle" type="checkbox" />
+              <span class="media-toggle-track" aria-hidden="true"></span>
+              <span class="media-toggle-label">过滤小图（minBytes）</span>
+            </label>
+          </div>
+
+          <div class="media-advanced-field media-save-field">
+            <div class="field-label">自动保存</div>
+            <label class="media-toggle-row">
+              <input id="autoSaveToggle" type="checkbox" />
+              <span class="media-toggle-track" aria-hidden="true"></span>
+              <span class="media-toggle-label">生成后自动保存</span>
+            </label>
+            <button id="selectSaveFolderBtn" class="geist-button-outline media-folder-btn" type="button" disabled>
+              选择保存目录
+              <span id="saveFolderPath" class="media-folder-path">浏览器默认位置</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -126,6 +205,7 @@
   <script src="/static/common/js/toast.js"></script>
   <script src="/static/common/js/prompt-enhancer.js?v=0.1.15"></script>
   <script src="/static/common/js/pwa.js?v=0.1.1"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="/static/public/js/media.js?v=0.1.0"></script>
 </body>
 
