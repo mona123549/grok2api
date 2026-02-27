@@ -8,6 +8,11 @@
   --md-actions-bg: rgba(255, 255, 255, 0.92);
   /* Align with /media composer width for consistent visual baseline */
   --md-workbench-width: 780px;
+
+  /* Desktop sticky layout */
+  --md-sticky-top: 12px;
+  /* Keep space for bottom fixed composer (aligned with .public-page main padding-bottom) */
+  --md-composer-reserve: 220px;
 }
 
 html[data-theme='dark'] {
@@ -45,6 +50,48 @@ html[data-theme='dark'] {
   .media-detail-layout {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+}
+
+/* Desktop: sticky stage + sticky right panel; left column becomes the main scroll container */
+@media (min-width: 1101px) {
+  .media-detail-video-surface {
+    position: sticky;
+    top: var(--md-sticky-top);
+    max-height: calc(100vh - var(--md-sticky-top) - var(--md-composer-reserve));
+    overflow: hidden;
+
+    display: flex;
+    flex-direction: column;
+  }
+
+  .media-detail-video-results {
+    flex: 1;
+    min-height: 0; /* critical for flex overflow scrolling */
+    overflow: auto;
+    padding-right: 4px; /* space for scrollbar */
+    scroll-snap-type: y proximity;
+  }
+
+  .media-detail-stage {
+    position: sticky;
+    top: var(--md-sticky-top);
+    max-height: calc(100vh - var(--md-sticky-top) - var(--md-composer-reserve));
+  }
+
+  .media-detail-stage-video video {
+    max-height: 100%;
+  }
+
+  .media-detail-image {
+    max-height: 100%;
+  }
+
+  .media-detail-panel {
+    position: sticky;
+    top: var(--md-sticky-top);
+    max-height: calc(100vh - var(--md-sticky-top) - var(--md-composer-reserve));
+    overflow: auto;
   }
 }
 
@@ -371,6 +418,56 @@ html[data-theme='dark'] .media-detail-video-empty {
   gap: 10px;
 }
 
+/* Run grouping (T5) */
+.media-detail-video-run {
+  border-radius: 12px;
+  border: 1px solid var(--md-border);
+  background: var(--md-surface-muted);
+  overflow: hidden;
+}
+
+html[data-theme='dark'] .media-detail-video-run {
+  background: rgba(26, 35, 48, 0.7);
+}
+
+.media-detail-video-run-summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+
+  border-bottom: 1px solid var(--md-border);
+}
+
+.media-detail-video-run-summary::-webkit-details-marker {
+  display: none;
+}
+
+.media-detail-video-run-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accents-7);
+}
+
+.media-detail-video-run-meta {
+  font-size: 11px;
+  color: var(--accents-4);
+}
+
+.media-detail-video-run-body {
+  padding: 10px 12px 12px;
+}
+
+.media-detail-video-run-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
 .media-detail-video-item {
   border-radius: 12px;
   border: 1px solid var(--md-border);
@@ -378,6 +475,7 @@ html[data-theme='dark'] .media-detail-video-empty {
   overflow: hidden;
   cursor: pointer;
   transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  scroll-snap-align: start;
 }
 
 .media-detail-video-item:hover {
@@ -407,7 +505,7 @@ html[data-theme='dark'] .media-detail-video-item {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--md-border);
 }
 
@@ -438,21 +536,35 @@ html[data-theme='dark'] .media-detail-video-item {
 }
 
 .media-detail-video-item-body {
-  padding: 10px 12px;
+  padding: 8px 10px;
 }
 
 .media-detail-video-item-body video {
   width: 100%;
-  max-height: 52vh;
+  height: 140px;
+  object-fit: cover;
   border-radius: 12px;
   background: #000;
 }
 
+/* Actions: show on hover/selected for a filmstrip-like compact list */
 .media-detail-video-item-actions {
-  padding: 0 12px 12px;
+  padding: 0 10px;
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  transition: opacity 0.15s ease, max-height 0.15s ease, padding 0.15s ease;
+}
+
+.media-detail-video-item:hover .media-detail-video-item-actions,
+.media-detail-video-item.is-selected .media-detail-video-item-actions {
+  opacity: 1;
+  max-height: 72px;
+  padding: 0 10px 10px;
 }
 
 /* Video card favorite button highlight */
@@ -610,4 +722,12 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
   margin-top: 8px;
   font-size: 11px;
   color: var(--accents-4);
+}
+
+.media-detail-video-advanced-actions {
+  margin-top: 10px;
+}
+
+.media-detail-video-advanced-actions button {
+  width: 100%;
 }

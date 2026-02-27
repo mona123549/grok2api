@@ -31,6 +31,7 @@
   const detailVideoStatusText = document.getElementById('detailVideoStatusText');
   const detailVideoEmpty = document.getElementById('detailVideoEmpty');
   const detailVideoResults = document.getElementById('detailVideoResults');
+  const detailVideoClearBtn = document.getElementById('detailVideoClearBtn');
 
   const detailVideoRatioSelect = document.getElementById('detailVideoRatioSelect');
   const detailVideoParallelSelect = document.getElementById('detailVideoParallelSelect');
@@ -40,6 +41,9 @@
 
   const SETTINGS_STORAGE_KEY = 'media_settings_v1';
   const UPSCALE_KEY = 'media_detail_upscale_enabled_v1';
+
+  // Media detail stage video playback preference (muted/volume)
+  const STAGE_PLAYBACK_PREF_KEY = 'media_detail_stage_playback_pref_v1';
 
   const videoState = {
     running: false,
@@ -65,6 +69,82 @@
     } catch (e) {
       return null;
     }
+  }
+
+  function clamp01(value) {
+    const n = typeof value === 'number' ? value : parseFloat(String(value));
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(1, n));
+  }
+
+  function loadStagePlaybackPref() {
+    try {
+      const raw = localStorage.getItem(STAGE_PLAYBACK_PREF_KEY);
+      const parsed = raw ? safeParseJson(raw) : null;
+      if (!parsed || typeof parsed !== 'object') return null;
+
+      const muted = Boolean(parsed.muted);
+      const volume = clamp01(parsed.volume);
+
+      return { muted, volume };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function persistStagePlaybackPref(pref) {
+    try {
+      if (!pref || typeof pref !== 'object') return;
+      const muted = Boolean(pref.muted);
+      const volume = clamp01(pref.volume);
+      localStorage.setItem(STAGE_PLAYBACK_PREF_KEY, JSON.stringify({ muted, volume, ts: Date.now() }));
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function applyStagePlaybackPrefToVideo(videoEl) {
+    if (!videoEl) return;
+    const pref = loadStagePlaybackPref();
+    if (!pref) return;
+
+    try {
+      videoEl.muted = Boolean(pref.muted);
+    } catch (e) {
+      // ignore
+    }
+
+    try {
+      // volume may throw in some edge cases; best-effort
+      videoEl.volume = clamp01(pref.volume);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  let stagePrefPersistTimer = 0;
+  function schedulePersistStagePlaybackPrefFromVideo(videoEl) {
+    if (!videoEl) return;
+    if (stagePrefPersistTimer) clearTimeout(stagePrefPersistTimer);
+
+    stagePrefPersistTimer = setTimeout(() => {
+      stagePrefPersistTimer = 0;
+      persistStagePlaybackPref({
+        muted: Boolean(videoEl.muted),
+        volume: clamp01(videoEl.volume),
+      });
+    }, 160);
+  }
+
+  function bindStagePlaybackPrefPersistence() {
+    if (!stageVideo) return;
+
+    // Apply last known preference once on init so UI starts consistent.
+    applyStagePlaybackPrefToVideo(stageVideo);
+
+    stageVideo.addEventListener('volumechange', () => {
+      schedulePersistStagePlaybackPrefFromVideo(stageVideo);
+    });
   }
 
   function hashStringToHex(text) {
@@ -672,7 +752,8 @@
     let url = '';
     if (videoEl) {
       // Keep list preview lightweight; stage will be the main player.
-      videoEl.controls = true;
+      videoEl.controls = false;
+      videoEl.muted = true;
       videoEl.preload = 'metadata';
       videoEl.playsInline = true;
       videoEl.setAttribute('playsinline', '');
@@ -698,13 +779,70 @@
     const raw = String(url || '').trim();
     const normalized = normalizeLocalVideoFileUrl(raw);
     const safe = normalized || raw;
-    body.innerHTML = `<video controls preload="metadata" playsinline webkit-playsinline><source src="${safe}" type="video/mp4"></video>`;
+    body.innerHTML = `<video preload="metadata" muted playsinline webkit-playsinline><source src="${safe}" type="video/mp4"></video>`;
     bindVideoLinks(item, safe);
     setVideoItemStatus(item, '完成', 'done');
   }
 
-  function createVideoCard(index, taskId) {
+  let currentVideoRunListEl = null;
+
+  function formatRunTime(ts) {
+    const t = typeof ts === 'number' ? ts : Date.now();
+    try {
+      return new Date(t).toLocaleString();
+    } catch (e) {
+      return String(t);
+    }
+  }
+
+  function collapseOlderVideoRuns(activeRunEl) {
+    if (!detailVideoResults) return;
+    const all = detailVideoResults.querySelectorAll('.media-detail-video-run');
+    all.forEach((el) => {
+      if (el === activeRunEl) return;
+      // Only collapse <details> runs.
+      if (el instanceof HTMLDetailsElement) {
+        el.open = false;
+      } else {
+        el.classList.add('is-collapsed');
+      }
+    });
+  }
+
+  function createVideoRunGroup({ parallel, prompt }) {
     if (!detailVideoResults) return null;
+
+    const runId = `run_${Date.now()}`;
+    const wrap = document.createElement('details');
+    wrap.className = 'media-detail-video-run';
+    wrap.dataset.runId = runId;
+    wrap.open = true;
+
+    const safeParallel = Math.max(1, Math.min(4, parseInt(String(parallel || '1'), 10) || 1));
+    const promptText = String(prompt || '').trim();
+    const summaryPrompt = promptText ? promptText.slice(0, 60) : '';
+
+    wrap.innerHTML = `
+      <summary class="media-detail-video-run-summary">
+        <div class="media-detail-video-run-title">本次生成（${safeParallel} 路）</div>
+        <div class="media-detail-video-run-meta">${formatRunTime(Date.now())}${summaryPrompt ? ` · ${summaryPrompt}` : ''}</div>
+      </summary>
+      <div class="media-detail-video-run-body">
+        <div class="media-detail-video-run-list"></div>
+      </div>
+    `;
+
+    // Insert newest run at top; fold older ones to keep list compact.
+    detailVideoResults.prepend(wrap);
+    collapseOlderVideoRuns(wrap);
+
+    return wrap.querySelector('.media-detail-video-run-list');
+  }
+
+  function createVideoCard(index, taskId, containerEl) {
+    const container = containerEl || detailVideoResults;
+    if (!container) return null;
+
     const item = document.createElement('div');
     item.className = 'media-detail-video-item';
     item.dataset.taskId = String(taskId || '').trim();
@@ -721,7 +859,7 @@
         <button class="geist-button-outline text-xs px-3" data-role="favorite" type="button" aria-pressed="false" title="收藏入库">收藏</button>
       </div>
     `;
-    detailVideoResults.appendChild(item);
+    container.appendChild(item);
     return item;
   }
 
@@ -858,8 +996,7 @@
       return;
     }
 
-    // reset UI
-    if (detailVideoResults) detailVideoResults.innerHTML = '';
+    // reset run state (do NOT clear history DOM)
     videoState.jobs.clear();
     videoState.taskIds = [];
 
@@ -871,6 +1008,9 @@
 
     const parallel = Math.max(1, Math.min(4, parseInt(String(detailVideoParallelSelect ? detailVideoParallelSelect.value : '1'), 10) || 1));
     const prompt = String(detailVideoPromptInput ? detailVideoPromptInput.value : '').trim();
+
+    // Reset current run container; create it only after at least one task is created successfully.
+    currentVideoRunListEl = null;
 
     const payload = {
       prompt,
@@ -901,6 +1041,9 @@
       return;
     }
 
+    // Create a new run group and append cards into it (newest on top).
+    currentVideoRunListEl = createVideoRunGroup({ parallel: taskIds.length, prompt });
+
     if (detailVideoEmpty) detailVideoEmpty.classList.add('hidden');
 
     videoState.running = true;
@@ -909,7 +1052,7 @@
     setVideoStatus(`运行中（${taskIds.length} 路）`);
 
     taskIds.forEach((taskId, idx) => {
-      const card = createVideoCard(idx + 1, taskId);
+      const card = createVideoCard(idx + 1, taskId, currentVideoRunListEl);
       if (!card) return;
       videoState.jobs.set(taskId, {
         taskId,
@@ -1073,7 +1216,44 @@
       prev.forEach((el) => el.classList.remove('is-selected'));
       card.classList.add('is-selected');
 
+      // Keep selected item visible in filmstrip scroll container
+      try {
+        card.scrollIntoView({ block: 'nearest' });
+      } catch (e) {
+        // ignore
+      }
+
       showStageVideo(url);
+      await attemptStageAutoplayFromUserGesture();
+    });
+  }
+
+  function bindDetailVideoClearButton() {
+    if (!detailVideoClearBtn) return;
+
+    detailVideoClearBtn.addEventListener('click', async () => {
+      const ok = window.confirm('确定清空视频列表吗？该操作不会影响已生成的视频文件本身。');
+      if (!ok) return;
+
+      // Stop running tasks first (best-effort), then clear UI/state
+      await stopDetailVideo(true);
+
+      if (detailVideoResults) detailVideoResults.innerHTML = '';
+      if (detailVideoEmpty) detailVideoEmpty.classList.remove('hidden');
+
+      videoState.jobs.clear();
+      videoState.taskIds = [];
+      videoState.running = false;
+
+      currentVideoRunListEl = null;
+
+      // Clear selection and stage
+      clearStageVideo();
+
+      setVideoButtons(false);
+      setVideoStatus('未开始');
+
+      toast('已清空视频列表', 'info');
     });
   }
 
@@ -1207,6 +1387,7 @@
   }
 
   let currentStageVideoUrl = '';
+  let stageAutoplayWarned = false;
 
   function clearStageVideo() {
     currentStageVideoUrl = '';
@@ -1231,6 +1412,83 @@
     }
   }
 
+  function waitForVideoMetadataOnce(videoEl, timeoutMs = 1200) {
+    return new Promise((resolve) => {
+      if (!videoEl) return resolve(false);
+
+      // If metadata is already available, no need to wait.
+      try {
+        if (Number.isFinite(videoEl.duration) && videoEl.readyState >= 1) return resolve(true);
+      } catch (e) {
+        // ignore
+      }
+
+      let done = false;
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(Boolean(ok));
+      };
+
+      const onMeta = () => finish(true);
+      const onErr = () => finish(false);
+
+      const cleanup = () => {
+        try {
+          videoEl.removeEventListener('loadedmetadata', onMeta);
+          videoEl.removeEventListener('error', onErr);
+        } catch (e) {
+          // ignore
+        }
+        clearTimeout(timer);
+      };
+
+      videoEl.addEventListener('loadedmetadata', onMeta, { once: true });
+      videoEl.addEventListener('error', onErr, { once: true });
+      const timer = setTimeout(() => finish(false), Math.max(0, timeoutMs || 0));
+    });
+  }
+
+  async function attemptPlayVideoElement(videoEl, { retryOnMetadata = true } = {}) {
+    if (!videoEl) return false;
+    if (!String(videoEl.getAttribute('src') || '').trim()) return false;
+
+    const playOnce = async () => {
+      try {
+        const ret = videoEl.play();
+        if (ret && typeof ret.then === 'function') {
+          await ret;
+        }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    };
+
+    const ok = await playOnce();
+    if (ok) return true;
+
+    if (retryOnMetadata) {
+      await waitForVideoMetadataOnce(videoEl, 1200);
+      return await playOnce();
+    }
+
+    return false;
+  }
+
+  async function attemptStageAutoplayFromUserGesture() {
+    // Called from click handler (user gesture). Browser may still block unmuted autoplay;
+    // keep UI working and show a gentle hint once.
+    if (!stageVideo) return false;
+    const ok = await attemptPlayVideoElement(stageVideo, { retryOnMetadata: true });
+    if (!ok && !stageAutoplayWarned) {
+      stageAutoplayWarned = true;
+      toast('浏览器可能阻止了自动播放，可在舞台手动点击播放', 'info');
+    }
+    return ok;
+  }
+
   function showStageVideo(url) {
     const clean = String(url || '').trim();
     if (!stageVideo || !stageVideoWrap) return;
@@ -1240,6 +1498,9 @@
     const finalUrl = normalized || clean;
 
     currentStageVideoUrl = finalUrl;
+
+    // Apply last preference before loading/playing (muted/volume)
+    applyStagePlaybackPrefToVideo(stageVideo);
 
     // Keep image visible behind; stage video is an overlay preview
     stageVideoWrap.hidden = false;
@@ -1463,9 +1724,13 @@
     // Initialize upscale state
     setUpscaleEnabled(getUpscaleEnabled());
 
+    // Stage playback preference (muted/volume)
+    bindStagePlaybackPrefPersistence();
+
     // T8 bindings (video composer)
     bindDetailVideoAdvancedToggle();
     bindDetailVideoDownloads();
+    bindDetailVideoClearButton();
     setVideoButtons(false);
     setVideoStatus('未开始');
 
