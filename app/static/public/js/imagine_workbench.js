@@ -996,11 +996,66 @@
     setTimeout(() => ensureInlineSubmitButton(attempt + 1), 50);
   }
 
+  function getSeedFromQuery() {
+    const params = new URLSearchParams(window.location.search);
+    const get = (k) => String(params.get(k) || '').trim();
+    return {
+      parentPostId: get('parent_post_id') || get('parentPostId') || get('parent_post') || '',
+      sourceImageUrl: get('source_image_url') || get('sourceImageUrl') || get('source') || '',
+      prompt: get('prompt') || '',
+    };
+  }
+
+  function applySeedFromQuery(seed) {
+    const s = seed && typeof seed === 'object' ? seed : null;
+    if (!s) return false;
+
+    const parentPostId = extractParentPostId(s.parentPostId);
+    const sourceImageUrlRaw = String(s.sourceImageUrl || '').trim();
+    const promptRaw = String(s.prompt || '').trim();
+
+    if (promptRaw && editPromptInput && !String(editPromptInput.value || '').trim()) {
+      editPromptInput.value = `基于此图编辑：${promptRaw}`;
+    }
+
+    if (!parentPostId) {
+      return Boolean(promptRaw);
+    }
+
+    const sourceImageUrl = normalizeHttpSourceUrl(sourceImageUrlRaw) || buildImaginePublicUrl(parentPostId);
+    const previewUrl = sourceImageUrl || buildImaginePublicUrl(parentPostId);
+
+    state.currentParentPostId = parentPostId;
+    state.currentSourceImageUrl = sourceImageUrl;
+    state.currentModeValue = 'parent_post';
+
+    if (parentPostInput) {
+      parentPostInput.value = parentPostId;
+    }
+
+    setPreview(previewUrl);
+    updateMeta();
+    setStatus('done', `已从详情页载入 parentPostId：${shortId(parentPostId)}`);
+
+    rememberParentPost({
+      parentPostId,
+      sourceImageUrl,
+      imageUrl: previewUrl,
+      origin: 'workbench_query',
+    });
+
+    return true;
+  }
+
   function init() {
     ensureInlineSubmitButton();
     bindEvents();
     renderHistory();
     resetCycle(false);
+
+    // T9: allow deep-link from /media/detail -> /imagine-workbench
+    applySeedFromQuery(getSeedFromQuery());
+
     updateMeta();
   }
 

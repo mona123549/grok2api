@@ -11,14 +11,44 @@
   const downloadBtn = document.getElementById('downloadBtn');
   const copyMainBtn = document.getElementById('copyMainBtn');
   const upscaleBtn = document.getElementById('upscaleBtn');
+  const favoriteBtn = document.getElementById('favoriteBtn');
+  const editImageBtn = document.getElementById('editImageBtn');
 
   const copyUrlBtn = document.getElementById('copyUrlBtn');
   const copyIdBtn = document.getElementById('copyIdBtn');
   const copySourceBtn = document.getElementById('copySourceBtn');
   const copyPromptBtn = document.getElementById('copyPromptBtn');
 
+  // T8: video composer (detail page)
+  const detailVideoPromptInput = document.getElementById('detailVideoPromptInput');
+  const detailVideoStartBtn = document.getElementById('detailVideoStartBtn');
+  const detailVideoStopBtn = document.getElementById('detailVideoStopBtn');
+  const detailVideoAdvancedToggle = document.getElementById('detailVideoAdvancedToggle');
+  const detailVideoAdvancedPanel = document.getElementById('detailVideoAdvancedPanel');
+  const detailVideoStatusText = document.getElementById('detailVideoStatusText');
+  const detailVideoEmpty = document.getElementById('detailVideoEmpty');
+  const detailVideoResults = document.getElementById('detailVideoResults');
+
+  const detailVideoRatioSelect = document.getElementById('detailVideoRatioSelect');
+  const detailVideoParallelSelect = document.getElementById('detailVideoParallelSelect');
+  const detailVideoLengthSelect = document.getElementById('detailVideoLengthSelect');
+  const detailVideoResolutionSelect = document.getElementById('detailVideoResolutionSelect');
+  const detailVideoPresetSelect = document.getElementById('detailVideoPresetSelect');
+
   const SETTINGS_STORAGE_KEY = 'media_settings_v1';
   const UPSCALE_KEY = 'media_detail_upscale_enabled_v1';
+
+  const videoState = {
+    running: false,
+    authHeader: '',
+    rawPublicKey: '',
+    taskIds: [],
+    jobs: new Map(), // taskId -> { item, source, buffer, progressBuffer, collecting, done }
+  };
+
+  // Video favorites: video_url -> library item id
+  const videoFavoriteByUrl = new Map();
+  let videoFavoriteIndexLoaded = false;
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -34,6 +64,17 @@
     }
   }
 
+  function hashStringToHex(text) {
+    // Deterministic small hash for stable ids (not for security)
+    const str = String(text || '');
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) {
+      h = ((h << 5) + h) ^ str.charCodeAt(i);
+      h |= 0;
+    }
+    return (h >>> 0).toString(16);
+  }
+
   function getQueryParams() {
     const params = new URLSearchParams(window.location.search);
     const get = (k) => String(params.get(k) || '').trim();
@@ -44,6 +85,786 @@
       sourceImageUrl: get('source_image_url') || get('source') || '',
       cacheKey: get('cache_key') || '',
     };
+  }
+
+  function normalizeAuthHeader(authHeader) {
+    if (!authHeader) return '';
+    if (authHeader.startsWith('Bearer ')) {
+      return authHeader.slice(7).trim();
+    }
+    return authHeader;
+  }
+
+  function buildVideoSseUrl(taskId, rawPublicKey) {
+    const protocol = window.location.protocol === 'https:' ? 'https' : 'http';
+    const params = new URLSearchParams();
+    params.set('task_id', String(taskId || '').trim());
+    params.set('t', String(Date.now()));
+    if (rawPublicKey) params.set('public_key', rawPublicKey);
+    return `${protocol}://${window.location.host}/v1/public/video/sse?${params.toString()}`;
+  }
+
+  // --- Media library (favorite) ---
+  let favoriteIndexLoaded = false;
+  const favoriteByParentPostId = new Map(); // parent_post_id -> library item id
+
+  function isSafeMediaLibraryImageUrl(url) {
+    const u = String(url || '').trim();
+    if (!u) return false;
+    if (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('/')) return true;
+    // Allow small data: URLs only to avoid bloating requests/storage
+    if (u.startsWith('data:') && u.length <= 1800) return true;
+    return false;
+  }
+
+  function buildStableLibraryIdForImage({ parentPostId, imageUrl }) {
+    const pid = String(parentPostId || '').trim();
+    if (pid) return `img_${pid}`;
+    const u = String(imageUrl || '').trim();
+    if (u) return `imgu_${hashStringToHex(u)}`;
+    return '';
+  }
+
+  function setFavoriteUi(on) {
+    if (!favoriteBtn) return;
+    const isOn = Boolean(on);
+    favoriteBtn.classList.toggle('is-favorite-on', isOn);
+    favoriteBtn.setAttribute('aria-pressed', isOn ? 'true' : 'false');
+    favoriteBtn.textContent = isOn ? '已藏' : '收藏';
+    favoriteBtn.title = isOn ? '取消收藏（仍保留记录）' : '收藏入库';
+  }
+
+  async function preloadFavoriteIndex() {
+    if (favoriteIndexLoaded) return;
+    favoriteIndexLoaded = true;
+
+    try {
+      const authHeader = typeof ensurePublicKey === 'function' ? await ensurePublicKey() : null;
+      if (authHeader === null) return;
+
+      const params = new URLSearchParams();
+      params.set('page', '1');
+      params.set('page_size', '200');
+      params.set('media_type', 'image');
+      params.set('favorite_only', 'true');
+
+      const res = await fetch(`/v1/public/media_library/list?${params.toString()}`, {
+        method: 'GET',
+        headers: {
+          ...(typeof buildAuthHeaders === 'function' ? buildAuthHeaders(authHeader) : {}),
+        },
+      });
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const items = Array.isArray(data && data.items) ? data.items : [];
+      for (const it of items) {
+        if (!it || typeof it !== 'object') continue;
+        const pid = String(it.parent_post_id || '').trim();
+        const id = String(it.id || '').trim();
+        if (pid && id) {
+          favoriteByParentPostId.set(pid, id);
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  async function favoriteImageItem({ parentPostId, prompt, sourceImageUrl, imageUrl, extra, id }) {
+    const authHeader = typeof ensurePublicKey === 'function' ? await ensurePublicKey() : null;
+    if (authHeader === null) {
+      toast('请先配置 Public Key', 'error');
+      window.location.href = '/login';
+      return null;
+    }
+
+    const payload = {
+      id: String(id || '').trim() || undefined,
+      media_type: 'image',
+      prompt: String(prompt || '').trim(),
+      parent_post_id: String(parentPostId || '').trim(),
+      source_image_url: String(sourceImageUrl || '').trim(),
+      image_url: isSafeMediaLibraryImageUrl(imageUrl) ? String(imageUrl || '').trim() : '',
+      extra: (extra && typeof extra === 'object') ? extra : {},
+    };
+
+    const res = await fetch('/v1/public/media_library/favorite', {
+      method: 'POST',
+      headers: {
+        ...(typeof buildAuthHeaders === 'function' ? buildAuthHeaders(authHeader) : {}),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      throw new Error(await res.text() || 'favorite_failed');
+    }
+
+    const data = await res.json();
+    return data && data.item ? data.item : null;
+  }
+
+  async function unfavoriteLibraryItemById(libraryId) {
+    const authHeader = typeof ensurePublicKey === 'function' ? await ensurePublicKey() : null;
+    if (authHeader === null) {
+      toast('请先配置 Public Key', 'error');
+      window.location.href = '/login';
+      return false;
+    }
+
+    const id = String(libraryId || '').trim();
+    if (!id) return false;
+
+    const res = await fetch('/v1/public/media_library/unfavorite', {
+      method: 'POST',
+      headers: {
+        ...(typeof buildAuthHeaders === 'function' ? buildAuthHeaders(authHeader) : {}),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ id }),
+    });
+
+    return res.ok;
+  }
+
+  function setVideoStatus(text) {
+    if (!detailVideoStatusText) return;
+    detailVideoStatusText.textContent = String(text || '').trim() || '未开始';
+  }
+
+  function setVideoButtons(running) {
+    const on = Boolean(running);
+    if (detailVideoStartBtn) {
+      detailVideoStartBtn.classList.toggle('hidden', on);
+      detailVideoStartBtn.disabled = false;
+    }
+    if (detailVideoStopBtn) {
+      detailVideoStopBtn.classList.toggle('hidden', !on);
+      detailVideoStopBtn.disabled = false;
+    }
+  }
+
+  function bindDetailVideoAdvancedToggle() {
+    if (!detailVideoAdvancedToggle || !detailVideoAdvancedPanel) return;
+    const setOpen = (open) => {
+      const isOpen = Boolean(open);
+      detailVideoAdvancedToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      detailVideoAdvancedPanel.hidden = !isOpen;
+    };
+    setOpen(false);
+    detailVideoAdvancedToggle.addEventListener('click', () => {
+      const expanded = detailVideoAdvancedToggle.getAttribute('aria-expanded') === 'true';
+      setOpen(!expanded);
+    });
+  }
+
+  function extractParentPostIdFromText(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    if (/^[0-9a-fA-F-]{32,36}$/.test(raw)) return raw;
+    const generated = raw.match(/\/generated\/([0-9a-fA-F-]{32,36})(?:\/|$)/);
+    if (generated) return generated[1];
+    const imaginePublic = raw.match(/\/imagine-public\/images\/([0-9a-fA-F-]{32,36})(?:\.jpg|\/|$)/);
+    if (imaginePublic) return imaginePublic[1];
+    const imagePath = raw.match(/\/images\/([0-9a-fA-F-]{32,36})(?:\.jpg|\/|$)/);
+    if (imagePath) return imagePath[1];
+    const all = raw.match(/([0-9a-fA-F-]{32,36})/g);
+    return all && all.length ? all[all.length - 1] : '';
+  }
+
+  function normalizeHttpSourceUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('data:')) return '';
+    if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+    if (raw.startsWith('/')) return `${window.location.origin}${raw}`;
+    return '';
+  }
+
+  function buildImaginePublicUrl(parentPostId) {
+    const id = String(parentPostId || '').trim();
+    if (!id) return '';
+    return `https://imagine-public.x.ai/imagine-public/images/${id}.jpg`;
+  }
+
+  function resolveVideoSource(data, rawImageUrl) {
+    const imageId = String(data && data.imageId ? data.imageId : '').trim();
+    const sourceImageUrl = String(data && data.sourceImageUrl ? data.sourceImageUrl : '').trim();
+    const imageUrl = String(rawImageUrl || '').trim();
+
+    const parentPostId =
+      (imageId && extractParentPostIdFromText(imageId))
+      || extractParentPostIdFromText(sourceImageUrl)
+      || extractParentPostIdFromText(imageUrl);
+
+    const picked =
+      normalizeHttpSourceUrl(sourceImageUrl)
+      || normalizeHttpSourceUrl(imageUrl)
+      || (parentPostId ? buildImaginePublicUrl(parentPostId) : '');
+
+    return {
+      parentPostId: String(parentPostId || '').trim(),
+      sourceImageUrl: String(picked || '').trim(),
+    };
+  }
+
+  function buildImagineWorkbenchUrl({ parentPostId, sourceImageUrl, prompt }) {
+    const params = new URLSearchParams();
+    const pid = String(parentPostId || '').trim();
+    const src = String(sourceImageUrl || '').trim();
+    const p = String(prompt || '').trim();
+
+    if (pid) params.set('parent_post_id', pid);
+    if (src) params.set('source_image_url', src);
+    if (p) params.set('prompt', p);
+
+    const qs = params.toString();
+    return qs ? `/imagine-workbench?${qs}` : '/imagine-workbench';
+  }
+
+  async function createVideoTask(authHeader, payload) {
+    const res = await fetch('/v1/public/video/start', {
+      method: 'POST',
+      headers: {
+        ...(typeof buildAuthHeaders === 'function' ? buildAuthHeaders(authHeader) : {}),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      throw new Error(await res.text() || 'video_start_failed');
+    }
+    return await res.json();
+  }
+
+  async function stopVideoTasks(authHeader, taskIds) {
+    const normalized = Array.isArray(taskIds)
+      ? taskIds.map((id) => String(id || '').trim()).filter(Boolean)
+      : [];
+    if (!normalized.length) return;
+    try {
+      await fetch('/v1/public/video/stop', {
+        method: 'POST',
+        headers: {
+          ...(typeof buildAuthHeaders === 'function' ? buildAuthHeaders(authHeader) : {}),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ task_ids: normalized }),
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function extractVideoInfo(buffer) {
+    if (!buffer) return null;
+    if (buffer.includes('<video')) {
+      const htmlMatches = buffer.match(/<video[\s\S]*?<\/video>/gi);
+      if (htmlMatches && htmlMatches.length) {
+        return { html: htmlMatches[htmlMatches.length - 1] };
+      }
+    }
+    const mdMatches = buffer.match(/\[video\]\(([^)]+)\)/g);
+    if (mdMatches && mdMatches.length) {
+      const match = mdMatches[mdMatches.length - 1].match(/\[video\]\(([^)]+)\)/);
+      if (match) return { url: match[1] };
+    }
+    const urlMatches = buffer.match(/https?:\/\/[^\s<)]+/g);
+    if (urlMatches && urlMatches.length) {
+      return { url: urlMatches[urlMatches.length - 1] };
+    }
+    return null;
+  }
+
+  function setVideoFavoriteUi(item, on) {
+    if (!item) return;
+    const btn = item.querySelector('[data-role="favorite"]');
+    if (!btn) return;
+    const isOn = Boolean(on);
+    btn.classList.toggle('is-favorite-on', isOn);
+    btn.setAttribute('aria-pressed', isOn ? 'true' : 'false');
+    btn.textContent = isOn ? '已藏' : '收藏';
+    btn.title = isOn ? '取消收藏（仍保留记录）' : '收藏入库';
+  }
+
+  function applyVideoFavoriteStateToItem(item, url) {
+    const clean = String(url || '').trim();
+    if (!clean || !item) return;
+    const libId = String(videoFavoriteByUrl.get(clean) || '').trim();
+    if (!libId) return;
+    item.dataset.videoLibraryId = libId;
+    setVideoFavoriteUi(item, true);
+  }
+
+  async function preloadVideoFavoriteIndex(authHeader) {
+    if (videoFavoriteIndexLoaded) return;
+    videoFavoriteIndexLoaded = true;
+
+    try {
+      const params = new URLSearchParams();
+      params.set('page', '1');
+      params.set('page_size', '200');
+      params.set('media_type', 'video');
+      params.set('favorite_only', 'true');
+
+      const res = await fetch(`/v1/public/media_library/list?${params.toString()}`, {
+        method: 'GET',
+        headers: {
+          ...(typeof buildAuthHeaders === 'function' ? buildAuthHeaders(authHeader) : {}),
+        },
+      });
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const items = Array.isArray(data && data.items) ? data.items : [];
+      for (const it of items) {
+        if (!it || typeof it !== 'object') continue;
+        const videoUrl = String(it.video_url || '').trim();
+        const id = String(it.id || '').trim();
+        if (videoUrl && id) {
+          videoFavoriteByUrl.set(videoUrl, id);
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  async function favoriteVideoLibraryItem(authHeader, payload) {
+    const res = await fetch('/v1/public/media_library/favorite', {
+      method: 'POST',
+      headers: {
+        ...(typeof buildAuthHeaders === 'function' ? buildAuthHeaders(authHeader) : {}),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) {
+      throw new Error(await res.text() || 'favorite_video_failed');
+    }
+    const data = await res.json();
+    return data && data.item ? data.item : null;
+  }
+
+  function bindVideoLinks(item, url) {
+    if (!item) return;
+    const open = item.querySelector('[data-role="open"]');
+    const download = item.querySelector('[data-role="download"]');
+    item.dataset.videoUrl = String(url || '').trim();
+
+    if (open) {
+      if (url) {
+        open.href = url;
+        open.classList.remove('hidden');
+      } else {
+        open.classList.add('hidden');
+        open.removeAttribute('href');
+      }
+    }
+    if (download) {
+      download.disabled = !url;
+      download.dataset.url = url || '';
+    }
+
+    applyVideoFavoriteStateToItem(item, url);
+  }
+
+  function setVideoItemStatus(item, text, cls) {
+    if (!item) return;
+    const el = item.querySelector('.media-detail-video-item-status');
+    if (!el) return;
+    el.textContent = String(text || '').trim() || '';
+    el.classList.remove('running', 'done', 'error');
+    if (cls) el.classList.add(cls);
+  }
+
+  function renderVideoHtml(item, html) {
+    const body = item && item.querySelector ? item.querySelector('.media-detail-video-item-body') : null;
+    if (!body) return;
+    body.innerHTML = html;
+    const videoEl = body.querySelector('video');
+    let url = '';
+    if (videoEl) {
+      videoEl.controls = true;
+      videoEl.preload = 'metadata';
+      videoEl.playsInline = true;
+      videoEl.setAttribute('playsinline', '');
+      videoEl.setAttribute('webkit-playsinline', '');
+      const source = videoEl.querySelector('source');
+      if (source && source.getAttribute('src')) url = source.getAttribute('src');
+      else if (videoEl.getAttribute('src')) url = videoEl.getAttribute('src');
+    }
+    bindVideoLinks(item, url);
+    setVideoItemStatus(item, '完成', 'done');
+  }
+
+  function renderVideoUrl(item, url) {
+    const body = item && item.querySelector ? item.querySelector('.media-detail-video-item-body') : null;
+    if (!body) return;
+    const safe = String(url || '').trim();
+    body.innerHTML = `<video controls preload="metadata" playsinline webkit-playsinline><source src="${safe}" type="video/mp4"></video>`;
+    bindVideoLinks(item, safe);
+    setVideoItemStatus(item, '完成', 'done');
+  }
+
+  function createVideoCard(index, taskId) {
+    if (!detailVideoResults) return null;
+    const item = document.createElement('div');
+    item.className = 'media-detail-video-item';
+    item.dataset.taskId = String(taskId || '').trim();
+
+    item.innerHTML = `
+      <div class="media-detail-video-item-head">
+        <div class="media-detail-video-item-title">任务 ${index}</div>
+        <div class="media-detail-video-item-status running">排队中</div>
+      </div>
+      <div class="media-detail-video-item-body">等待上游返回视频流...</div>
+      <div class="media-detail-video-item-actions">
+        <a class="geist-button-outline text-xs px-3 hidden" data-role="open" target="_blank" rel="noopener">打开</a>
+        <button class="geist-button-outline text-xs px-3" data-role="download" type="button" disabled>下载</button>
+        <button class="geist-button-outline text-xs px-3" data-role="favorite" type="button" aria-pressed="false" title="收藏入库">收藏</button>
+      </div>
+    `;
+    detailVideoResults.appendChild(item);
+    return item;
+  }
+
+  function completeVideoJob(taskId, options) {
+    const job = videoState.jobs.get(taskId);
+    if (!job || job.done) return;
+    job.done = true;
+
+    if (job.source) {
+      try {
+        job.source.close();
+      } catch (e) {
+        // ignore
+      }
+      job.source = null;
+    }
+
+    if (options && options.error) {
+      setVideoItemStatus(job.item, options.error, 'error');
+    } else if (!job.item.dataset.videoUrl) {
+      setVideoItemStatus(job.item, '完成（无链接）', 'error');
+    } else {
+      setVideoItemStatus(job.item, '完成', 'done');
+    }
+
+    const allDone = Array.from(videoState.jobs.values()).every((it) => it.done);
+    if (allDone) {
+      videoState.running = false;
+      setVideoButtons(false);
+      setVideoStatus('全部完成');
+    }
+  }
+
+  function handleVideoDelta(taskId, text) {
+    if (!text) return;
+    const job = videoState.jobs.get(taskId);
+    if (!job) return;
+
+    if (text.includes('超分辨率')) {
+      setVideoItemStatus(job.item, '超分辨率中', 'running');
+      return;
+    }
+
+    if (!job.collecting) {
+      const mayContainVideo = text.includes('<video') || text.includes('[video](') || text.includes('http://') || text.includes('https://');
+      if (mayContainVideo) {
+        job.collecting = true;
+      }
+    }
+
+    if (job.collecting) {
+      job.buffer += text;
+      const info = extractVideoInfo(job.buffer);
+      if (info) {
+        if (info.html) renderVideoHtml(job.item, info.html);
+        else if (info.url) renderVideoUrl(job.item, info.url);
+      }
+      return;
+    }
+
+    job.progressBuffer += text;
+    const matches = [...job.progressBuffer.matchAll(/进度\s*(\d+)%/g)];
+    if (matches.length) {
+      const value = parseInt(matches[matches.length - 1][1], 10);
+      setVideoItemStatus(job.item, `进度 ${value}%`, 'running');
+      job.progressBuffer = job.progressBuffer.slice(-160);
+    }
+  }
+
+  function openVideoStream(taskId, item) {
+    const sseUrl = buildVideoSseUrl(taskId, videoState.rawPublicKey);
+    const es = new EventSource(sseUrl);
+
+    const job = videoState.jobs.get(taskId);
+    if (job) job.source = es;
+
+    es.onopen = () => {
+      setVideoItemStatus(item, '生成中', 'running');
+    };
+
+    es.onmessage = (event) => {
+      if (!event || !event.data) return;
+      if (event.data === '[DONE]') {
+        completeVideoJob(taskId, null);
+        return;
+      }
+
+      let payload = null;
+      try {
+        payload = JSON.parse(event.data);
+      } catch (e) {
+        return;
+      }
+
+      if (payload && payload.error) {
+        completeVideoJob(taskId, { error: '失败' });
+        return;
+      }
+
+      const choice = payload.choices && payload.choices[0] ? payload.choices[0] : null;
+      const delta = choice && choice.delta ? choice.delta : null;
+
+      if (delta && delta.content) {
+        handleVideoDelta(taskId, delta.content);
+      }
+      if (choice && choice.finish_reason === 'stop') {
+        completeVideoJob(taskId, null);
+      }
+    };
+
+    es.onerror = () => {
+      const jobState = videoState.jobs.get(taskId);
+      if (!jobState || jobState.done) return;
+      completeVideoJob(taskId, { error: '连接异常' });
+    };
+  }
+
+  async function startDetailVideo(data, rawImageUrl) {
+    if (videoState.running) {
+      toast('视频任务正在运行中', 'warning');
+      return;
+    }
+
+    const { parentPostId, sourceImageUrl } = resolveVideoSource(data, rawImageUrl);
+    if (!parentPostId) {
+      toast('缺少 parentPostId（image_id），无法生成视频', 'error');
+      return;
+    }
+
+    const authHeader = typeof ensurePublicKey === 'function' ? await ensurePublicKey() : null;
+    if (authHeader === null) {
+      toast('请先配置 Public Key', 'error');
+      window.location.href = '/login';
+      return;
+    }
+
+    // reset UI
+    if (detailVideoResults) detailVideoResults.innerHTML = '';
+    videoState.jobs.clear();
+    videoState.taskIds = [];
+
+    videoState.authHeader = authHeader;
+    videoState.rawPublicKey = normalizeAuthHeader(authHeader);
+
+    // Preload video favorites so finished cards can auto-highlight.
+    preloadVideoFavoriteIndex(authHeader);
+
+    const parallel = Math.max(1, Math.min(4, parseInt(String(detailVideoParallelSelect ? detailVideoParallelSelect.value : '1'), 10) || 1));
+    const prompt = String(detailVideoPromptInput ? detailVideoPromptInput.value : '').trim();
+
+    const payload = {
+      prompt,
+      aspect_ratio: detailVideoRatioSelect ? detailVideoRatioSelect.value : '16:9',
+      video_length: parseInt(String(detailVideoLengthSelect ? detailVideoLengthSelect.value : '6'), 10) || 6,
+      resolution_name: detailVideoResolutionSelect ? detailVideoResolutionSelect.value : '480p',
+      preset: detailVideoPresetSelect ? detailVideoPresetSelect.value : (prompt ? 'custom' : 'spicy'),
+      parent_post_id: parentPostId,
+      source_image_url: sourceImageUrl || buildImaginePublicUrl(parentPostId),
+    };
+
+    const taskIds = [];
+    for (let i = 0; i < parallel; i++) {
+      try {
+        const resp = await createVideoTask(authHeader, payload);
+        const taskId = String(resp && resp.task_id ? resp.task_id : '').trim();
+        if (!taskId) throw new Error('missing_task_id');
+        taskIds.push(taskId);
+      } catch (e) {
+        toast(`第 ${i + 1} 路视频任务创建失败`, 'error');
+        break;
+      }
+    }
+
+    if (!taskIds.length) {
+      setVideoStatus('创建失败');
+      setVideoButtons(false);
+      return;
+    }
+
+    if (detailVideoEmpty) detailVideoEmpty.classList.add('hidden');
+
+    videoState.running = true;
+    videoState.taskIds = taskIds.slice();
+    setVideoButtons(true);
+    setVideoStatus(`运行中（${taskIds.length} 路）`);
+
+    taskIds.forEach((taskId, idx) => {
+      const card = createVideoCard(idx + 1, taskId);
+      if (!card) return;
+      videoState.jobs.set(taskId, {
+        taskId,
+        item: card,
+        source: null,
+        buffer: '',
+        progressBuffer: '',
+        collecting: false,
+        done: false,
+      });
+      openVideoStream(taskId, card);
+    });
+  }
+
+  async function stopDetailVideo(silent) {
+    if (!videoState.running && !videoState.taskIds.length) return;
+
+    const runningTaskIds = videoState.taskIds.slice();
+    await stopVideoTasks(videoState.authHeader, runningTaskIds);
+
+    videoState.jobs.forEach((job) => {
+      if (job.source) {
+        try {
+          job.source.close();
+        } catch (e) {
+          // ignore
+        }
+        job.source = null;
+      }
+      if (!job.done) {
+        job.done = true;
+        setVideoItemStatus(job.item, '已中断', 'error');
+      }
+    });
+
+    videoState.running = false;
+    videoState.taskIds = [];
+    setVideoButtons(false);
+    setVideoStatus('已停止');
+
+    if (!silent) {
+      toast('视频任务已中断', 'warning');
+    }
+  }
+
+  function bindDetailVideoDownloads() {
+    if (!detailVideoResults) return;
+    detailVideoResults.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+
+      const role = target.getAttribute('data-role');
+      if (role !== 'download' && role !== 'favorite') return;
+
+      if (role === 'download') {
+        const url = String(target.dataset.url || '').trim();
+        if (!url) return;
+
+        try {
+          const resp = await fetch(url, { mode: 'cors' });
+          if (!resp.ok) throw new Error('download_failed');
+          const blob = await resp.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const anchor = document.createElement('a');
+          anchor.href = blobUrl;
+          anchor.download = `media_detail_video_${Date.now()}.mp4`;
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          URL.revokeObjectURL(blobUrl);
+        } catch (e) {
+          toast('下载失败，请检查链接可访问性', 'error');
+        }
+        return;
+      }
+
+      // favorite
+      const card = target.closest('.media-detail-video-item');
+      if (!card) return;
+
+      const url = String(card.dataset.videoUrl || '').trim();
+      if (!url) {
+        toast('视频尚未生成完成（缺少链接）', 'warning');
+        return;
+      }
+
+      const authHeader = typeof ensurePublicKey === 'function' ? await ensurePublicKey() : null;
+      if (authHeader === null) {
+        toast('请先配置 Public Key', 'error');
+        window.location.href = '/login';
+        return;
+      }
+
+      const currentOn = target.getAttribute('aria-pressed') === 'true';
+      target.disabled = true;
+
+      try {
+        if (!currentOn) {
+          const data = getQueryParams();
+          const rawImageUrl = String(data.imageUrl || '').trim();
+          const { parentPostId, sourceImageUrl } = resolveVideoSource(data, rawImageUrl);
+
+          const derivedFromId = parentPostId ? `img_${parentPostId}` : '';
+          const stableId = `vidu_${hashStringToHex(url)}`;
+
+          const resp = await favoriteVideoLibraryItem(authHeader, {
+            id: stableId,
+            media_type: 'video',
+            prompt: String(detailVideoPromptInput ? detailVideoPromptInput.value : '').trim() || String(data.prompt || '').trim(),
+            parent_post_id: String(parentPostId || '').trim(),
+            source_image_url: String(sourceImageUrl || '').trim(),
+            video_url: url,
+            derived_from_id: derivedFromId,
+            extra: {
+              source: 'media_detail_video',
+            },
+          });
+
+          const savedId = String(resp && resp.id ? resp.id : stableId).trim();
+          if (savedId) {
+            card.dataset.videoLibraryId = savedId;
+            videoFavoriteByUrl.set(url, savedId);
+          }
+
+          setVideoFavoriteUi(card, true);
+          toast('视频已收藏', 'success');
+        } else {
+          const libId = String(card.dataset.videoLibraryId || '').trim() || String(videoFavoriteByUrl.get(url) || '').trim();
+          if (!libId) {
+            toast('缺少 libraryId，无法取消收藏', 'error');
+            return;
+          }
+
+          const ok = await unfavoriteLibraryItemById(libId);
+          if (!ok) {
+            toast('取消收藏失败', 'error');
+            return;
+          }
+
+          videoFavoriteByUrl.delete(url);
+          setVideoFavoriteUi(card, false);
+          toast('已取消收藏', 'info');
+        }
+      } catch (e) {
+        toast('收藏操作失败', 'error');
+      } finally {
+        target.disabled = false;
+      }
+    });
   }
 
   function formatDisplayValue(value, fallback = '-') {
@@ -286,8 +1107,132 @@
       });
     }
 
+    if (favoriteBtn) {
+      favoriteBtn.addEventListener('click', async () => {
+        const { parentPostId, sourceImageUrl } = resolveVideoSource(data, rawImageUrl);
+        if (!parentPostId) {
+          toast('缺少 parentPostId（image_id），无法收藏入库', 'error');
+          return;
+        }
+
+        const currentOn = favoriteBtn.getAttribute('aria-pressed') === 'true';
+        favoriteBtn.disabled = true;
+
+        try {
+          if (!currentOn) {
+            const stableId = buildStableLibraryIdForImage({ parentPostId, imageUrl: rawImageUrl }) || '';
+            const resp = await favoriteImageItem({
+              parentPostId,
+              prompt: data.prompt,
+              sourceImageUrl,
+              imageUrl: rawImageUrl,
+              id: stableId,
+              extra: {
+                source: 'media_detail',
+              },
+            });
+
+            const savedId = String(resp && resp.id ? resp.id : stableId).trim();
+            if (savedId) {
+              favoriteBtn.dataset.libraryId = savedId;
+            }
+            favoriteByParentPostId.set(parentPostId, savedId || stableId);
+
+            setFavoriteUi(true);
+            toast('已收藏', 'success');
+          } else {
+            const libraryId =
+              String(favoriteBtn.dataset.libraryId || '').trim()
+              || String(favoriteByParentPostId.get(parentPostId) || '').trim();
+
+            if (!libraryId) {
+              toast('缺少 libraryId，无法取消收藏', 'error');
+              return;
+            }
+
+            const ok = await unfavoriteLibraryItemById(libraryId);
+            if (!ok) {
+              toast('取消收藏失败', 'error');
+              return;
+            }
+
+            setFavoriteUi(false);
+            toast('已取消收藏', 'info');
+          }
+        } catch (e) {
+          toast('收藏操作失败', 'error');
+        } finally {
+          favoriteBtn.disabled = false;
+        }
+      });
+    }
+
+    if (editImageBtn) {
+      editImageBtn.addEventListener('click', () => {
+        const { parentPostId, sourceImageUrl } = resolveVideoSource(data, rawImageUrl);
+        if (!parentPostId) {
+          toast('缺少 parentPostId，无法跳转到编辑工作台', 'error');
+          return;
+        }
+        window.location.href = buildImagineWorkbenchUrl({
+          parentPostId,
+          sourceImageUrl,
+          prompt: data.prompt,
+        });
+      });
+    }
+
+    // Initialize favorite state (best-effort preload)
+    setFavoriteUi(false);
+    preloadFavoriteIndex().then(() => {
+      const { parentPostId } = resolveVideoSource(data, rawImageUrl);
+      if (!parentPostId) return;
+      const libId = String(favoriteByParentPostId.get(parentPostId) || '').trim();
+      if (libId) {
+        favoriteBtn && (favoriteBtn.dataset.libraryId = libId);
+        setFavoriteUi(true);
+      }
+    });
+
     // Initialize upscale state
     setUpscaleEnabled(getUpscaleEnabled());
+
+    // T8 bindings (video composer)
+    bindDetailVideoAdvancedToggle();
+    bindDetailVideoDownloads();
+    setVideoButtons(false);
+    setVideoStatus('未开始');
+
+    if (detailVideoStartBtn) {
+      detailVideoStartBtn.addEventListener('click', () => {
+        startDetailVideo(data, rawImageUrl);
+      });
+    }
+    if (detailVideoStopBtn) {
+      detailVideoStopBtn.addEventListener('click', () => {
+        stopDetailVideo(false);
+      });
+    }
+    if (detailVideoPromptInput) {
+      detailVideoPromptInput.addEventListener('keydown', (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+          event.preventDefault();
+          startDetailVideo(data, rawImageUrl);
+        }
+      });
+    }
+
+    window.addEventListener('beforeunload', () => {
+      videoState.jobs.forEach((job) => {
+        if (job && job.source) {
+          try {
+            job.source.close();
+          } catch (e) {
+            // ignore
+          }
+        }
+      });
+    });
 
     // Image load error
     if (detailImage) {

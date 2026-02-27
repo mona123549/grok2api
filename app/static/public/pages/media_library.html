@@ -1,0 +1,105 @@
+<![CDATA[
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content">
+  <title>Grok2API - Media 历史库</title>
+  <link rel="icon" href="/static/common/img/favicon/favicon.ico">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#fafafa">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Grok2API">
+  <link rel="apple-touch-icon" href="/static/public/pwa/apple-touch-icon.png">
+
+  <script src="/static/vendor/tailwind/tailwindcss-cdn.js"></script>
+  <link href="/static/vendor/geist/geist-sans.css" rel="stylesheet">
+  <link href="/static/vendor/geist/geist-mono.css" rel="stylesheet">
+  <script src="/static/common/js/theme.js?v=0.1.0"></script>
+
+  <link href="/static/common/css/common.css?v=0.3.8" rel="stylesheet">
+  <link href="/static/common/css/toast.css" rel="stylesheet">
+  <link href="/static/public/css/media_library.css?v=0.1.0" rel="stylesheet">
+</head>
+
+<body class="public-page min-h-screen flex flex-col" style="background-color: var(--bg);">
+  <div id="toast-container" class="toast-container"></div>
+  <div id="app-header"></div>
+
+  <main class="flex-1 container mx-auto max-w-6xl px-4 sm:px-6 py-5 sm:py-8 fade-in">
+    <div class="mlib-hero">
+      <div>
+        <h2 class="text-2xl font-semibold tracking-tight">历史媒体库</h2>
+        <p class="text-[var(--accents-4)] mt-1 text-sm">通过“收藏/爱心”显式入库，用于长期回看与溯源。</p>
+      </div>
+
+      <div class="mlib-actions">
+        <button id="backToMediaBtn" class="geist-button-outline mlib-btn" type="button">返回 Media</button>
+        <button id="refreshBtn" class="geist-button-outline mlib-btn" type="button">刷新</button>
+      </div>
+    </div>
+
+    <section class="mlib-toolbar" aria-label="Media library filters">
+      <div class="mlib-toolbar-left">
+        <label class="mlib-label" for="typeSelect">类型</label>
+        <select id="typeSelect" class="geist-input mlib-input">
+          <option value="">全部</option>
+          <option value="image">图片</option>
+          <option value="video">视频</option>
+        </select>
+
+        <label class="mlib-label" for="favoriteOnlyToggle">仅收藏</label>
+        <label class="mlib-toggle">
+          <input id="favoriteOnlyToggle" type="checkbox" checked />
+          <span class="mlib-toggle-track" aria-hidden="true"></span>
+          <span class="mlib-toggle-text">开启</span>
+        </label>
+      </div>
+
+      <div class="mlib-toolbar-right">
+        <input id="searchInput" class="geist-input mlib-input" type="text" placeholder="搜索 prompt 关键词（可选）" />
+        <button id="searchBtn" class="geist-button mlib-primary" type="button">搜索</button>
+      </div>
+    </section>
+
+    <section class="mlib-status" aria-label="Media library status">
+      <span class="mlib-status-label">状态</span>
+      <span id="statusText" class="mlib-status-value">未加载</span>
+      <span class="mlib-status-sep"></span>
+      <span class="mlib-status-label">总数</span>
+      <span id="totalText" class="mlib-status-value font-mono">0</span>
+      <span class="mlib-status-sep"></span>
+      <span class="mlib-status-label">已显示</span>
+      <span id="shownText" class="mlib-status-value font-mono">0</span>
+    </section>
+
+    <section class="mlib-surface" aria-label="Media library surface">
+      <div id="emptyState" class="mlib-empty">
+        <div class="empty-title">暂无收藏</div>
+        <div class="empty-subtitle">在 Media 列表页或详情页点击“爱心”即可入库</div>
+      </div>
+
+      <div id="grid" class="mlib-grid" aria-label="Media library grid"></div>
+
+      <div class="mlib-footer">
+        <button id="loadMoreBtn" class="geist-button-outline mlib-btn" type="button">加载更多</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="app-footer"></div>
+
+  <script src="/static/common/js/admin-auth.js?v=0.3.0"></script>
+  <script src="/static/common/js/public-header.js?v=0.3.3"></script>
+  <script src="/static/common/js/footer.js?v=0.3.0"></script>
+  <script src="/static/common/js/toast.js"></script>
+  <script src="/static/common/js/pwa.js?v=0.1.1"></script>
+  <script src="/static/public/js/media_library.js?v=0.1.0"></script>
+</body>
+
+</html>
+]]>

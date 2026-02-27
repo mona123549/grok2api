@@ -36,6 +36,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR", str(DEFAULT_DATA_DIR))).expanduser()
 # 配置文件路径
 CONFIG_FILE = DATA_DIR / "config.toml"
 TOKEN_FILE = DATA_DIR / "token.json"
+MEDIA_LIBRARY_FILE = DATA_DIR / "media_library.json"
 LOCK_DIR = DATA_DIR / ".locks"
 
 
@@ -75,6 +76,16 @@ class BaseStorage(abc.ABC):
     @abc.abstractmethod
     async def save_tokens(self, data: Dict[str, Any]):
         """保存所有 Token"""
+        pass
+
+    @abc.abstractmethod
+    async def load_media_library(self) -> Dict[str, Any]:
+        """加载媒体库（收藏/历史）"""
+        pass
+
+    @abc.abstractmethod
+    async def save_media_library(self, data: Dict[str, Any]):
+        """保存媒体库（收藏/历史）"""
         pass
 
     @abc.abstractmethod
@@ -226,6 +237,32 @@ class LocalStorage(BaseStorage):
             logger.error(f"LocalStorage: 保存 Token 失败: {e}")
             raise StorageError(f"保存 Token 失败: {e}")
 
+    async def load_media_library(self) -> Dict[str, Any]:
+        if not MEDIA_LIBRARY_FILE.exists():
+            return {"version": 1, "items": []}
+        try:
+            async with aiofiles.open(MEDIA_LIBRARY_FILE, "rb") as f:
+                content = await f.read()
+            data = json_loads(content) if content else None
+            return data if isinstance(data, dict) else {"version": 1, "items": []}
+        except Exception as e:
+            logger.error(f"LocalStorage: 加载 MediaLibrary 失败: {e}")
+            return {"version": 1, "items": []}
+
+    async def save_media_library(self, data: Dict[str, Any]):
+        try:
+            MEDIA_LIBRARY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = MEDIA_LIBRARY_FILE.with_suffix(".tmp")
+            payload = data if isinstance(data, dict) else {"version": 1, "items": []}
+
+            async with aiofiles.open(temp_path, "wb") as f:
+                await f.write(orjson.dumps(payload, option=orjson.OPT_INDENT_2))
+
+            os.replace(temp_path, MEDIA_LIBRARY_FILE)
+        except Exception as e:
+            logger.error(f"LocalStorage: 保存 MediaLibrary 失败: {e}")
+            raise StorageError(f"保存 MediaLibrary 失败: {e}")
+
     async def close(self):
         pass
 
@@ -250,6 +287,7 @@ class RedisStorage(BaseStorage):
             url, decode_responses=True, health_check_interval=30
         )
         self.config_key = "grok2api:config"  # Hash: section.key -> value_json
+        self.media_library_key = "grok2api:media_library"  # String: media library json
         self.key_pools = "grok2api:pools"  # Set: pool_names
         self.prefix_pool_set = "grok2api:pool:"  # Set: pool -> token_ids
         self.prefix_token_hash = "grok2api:token:"  # Hash: token_id -> token_data
@@ -480,6 +518,27 @@ class RedisStorage(BaseStorage):
             logger.error(f"RedisStorage: 保存 Token 失败: {e}")
             raise
 
+    async def load_media_library(self) -> Dict[str, Any]:
+        """加载媒体库（收藏/历史）"""
+        try:
+            raw = await self.redis.get(self.media_library_key)
+            if not raw:
+                return {"version": 1, "items": []}
+            data = json_loads(raw)
+            return data if isinstance(data, dict) else {"version": 1, "items": []}
+        except Exception as e:
+            logger.error(f"RedisStorage: 加载 MediaLibrary 失败: {e}")
+            return {"version": 1, "items": []}
+
+    async def save_media_library(self, data: Dict[str, Any]):
+        """保存媒体库（收藏/历史）"""
+        payload = data if isinstance(data, dict) else {"version": 1, "items": []}
+        try:
+            await self.redis.set(self.media_library_key, json_dumps(payload))
+        except Exception as e:
+            logger.error(f"RedisStorage: 保存 MediaLibrary 失败: {e}")
+            raise StorageError(f"保存 MediaLibrary 失败: {e}")
+
     async def close(self):
         try:
             await self.redis.close()
@@ -546,6 +605,16 @@ class SQLStorage(BaseStorage):
                         key_name VARCHAR(64) NOT NULL,
                         value TEXT,
                         PRIMARY KEY (section, key_name)
+                    )
+                """)
+                )
+
+                # 媒体库表（单行 JSON blob，未来可再演进为结构化表）
+                await conn.execute(
+                    text("""
+                    CREATE TABLE IF NOT EXISTS media_library (
+                        key_name VARCHAR(64) PRIMARY KEY,
+                        value TEXT
                     )
                 """)
                 )
@@ -691,6 +760,50 @@ class SQLStorage(BaseStorage):
         except Exception as e:
             logger.error(f"SQLStorage: 保存配置失败: {e}")
             raise
+
+    async def load_media_library(self) -> Dict[str, Any]:
+        await self._ensure_schema()
+        from sqlalchemy import text
+
+        try:
+            async with self.async_session() as session:
+                res = await session.execute(
+                    text("SELECT value FROM media_library WHERE key_name=:k"),
+                    {"k": "default"},
+                )
+                row = res.first()
+                if not row or not row[0]:
+                    return {"version": 1, "items": []}
+                try:
+                    data = json_loads(row[0])
+                except Exception:
+                    data = None
+                return data if isinstance(data, dict) else {"version": 1, "items": []}
+        except Exception as e:
+            logger.error(f"SQLStorage: 加载 MediaLibrary 失败: {e}")
+            return {"version": 1, "items": []}
+
+    async def save_media_library(self, data: Dict[str, Any]):
+        await self._ensure_schema()
+        from sqlalchemy import text
+
+        payload = data if isinstance(data, dict) else {"version": 1, "items": []}
+        try:
+            async with self.async_session() as session:
+                await session.execute(
+                    text("DELETE FROM media_library WHERE key_name=:k"),
+                    {"k": "default"},
+                )
+                await session.execute(
+                    text(
+                        "INSERT INTO media_library (key_name, value) VALUES (:k, :v)"
+                    ),
+                    {"k": "default", "v": json_dumps(payload)},
+                )
+                await session.commit()
+        except Exception as e:
+            logger.error(f"SQLStorage: 保存 MediaLibrary 失败: {e}")
+            raise StorageError(f"保存 MediaLibrary 失败: {e}")
 
     async def load_tokens(self) -> Dict[str, Any]:
         await self._ensure_schema()

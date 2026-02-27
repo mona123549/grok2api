@@ -53,6 +53,7 @@
       <div class="media-surface">
         <div class="media-surface-toolbar" aria-label="Media waterfall toolbar">
           <button id="batchDownloadBtn" class="geist-button-outline media-batch-btn" type="button" title="批量下载">批量</button>
+          <button id="libraryBtn" class="geist-button-outline media-batch-btn" type="button" title="打开历史媒体库（收藏）">历史库</button>
 
           <div id="selectionToolbar" class="media-selection-toolbar hidden" role="region" aria-label="Media batch download toolbar">
             <button id="toggleSelectAllBtn" class="geist-button-outline media-selection-btn" type="button">全选</button>
@@ -188,9 +189,12 @@
               <span class="media-toggle-label">生成后自动保存</span>
             </label>
             <button id="selectSaveFolderBtn" class="geist-button-outline media-folder-btn" type="button" disabled>
-              选择保存目录
-              <span id="saveFolderPath" class="media-folder-path">浏览器默认位置</span>
+              选择保存目录（可选）
+              <span id="saveFolderPath" class="media-folder-path">未选择（将使用浏览器下载）</span>
             </button>
+            <div id="saveFolderHint" class="media-advanced-hint">
+              仅部分浏览器支持目录写入；不会修改浏览器默认下载路径。
+            </div>
           </div>
         </div>
       </div>

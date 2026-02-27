@@ -19,9 +19,11 @@
   const autoSaveToggle = document.getElementById('autoSaveToggle');
   const selectSaveFolderBtn = document.getElementById('selectSaveFolderBtn');
   const saveFolderPath = document.getElementById('saveFolderPath');
+  const saveFolderHint = document.getElementById('saveFolderHint');
 
   // T10 batch download
   const batchDownloadBtn = document.getElementById('batchDownloadBtn');
+  const libraryBtn = document.getElementById('libraryBtn');
   const selectionToolbar = document.getElementById('selectionToolbar');
   const toggleSelectAllBtn = document.getElementById('toggleSelectAllBtn');
   const downloadSelectedBtn = document.getElementById('downloadSelectedBtn');
@@ -57,6 +59,11 @@
 
   // Unified settings storage (v1)
   const SETTINGS_STORAGE_KEY = 'media_settings_v1';
+
+  // T6: keep recent waterfall items in sessionStorage so "Back" doesn't lose images
+  const WATERFALL_SESSION_KEY = 'media_waterfall_session_v1';
+  const WATERFALL_SESSION_TTL_MS = 1000 * 60 * 60 * 6; // 6h
+
   const DEFAULT_SETTINGS = {
     v: 1,
     ratio: '2:3',
@@ -74,7 +81,8 @@
     auto_filter: false,
     auto_save: false,
     auto_save_use_fs: false,
-    auto_save_folder_label: '浏览器默认位置',
+    // Display label only (FS handle cannot be persisted); when not selected, fallback to browser download.
+    auto_save_folder_label: '未选择（将使用浏览器下载）',
   };
 
   let mediaSettings = { ...DEFAULT_SETTINGS };
@@ -98,6 +106,14 @@
   let currentTaskIds = [];
   let streamSequence = 0;
   const streamImageMap = new Map();
+
+  // T6 session persistence (throttled)
+  let persistWaterfallTimer = null;
+
+  // Stream activity tracking (for soft-stop idle wait)
+  let lastStreamEventAt = 0;
+  let softStopIdleTimer = null;
+  const SOFT_STOP_IDLE_MS = 2500;
 
   let finalMinBytesDefault = 100000;
 
@@ -125,6 +141,17 @@
     } catch (e) {
       return null;
     }
+  }
+
+  function hashStringToHex(text) {
+    // Deterministic small hash for stable ids (not for security)
+    const str = String(text || '');
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) {
+      h = ((h << 5) + h) ^ str.charCodeAt(i);
+      h |= 0;
+    }
+    return (h >>> 0).toString(16);
   }
 
   function loadMediaSettings() {
@@ -230,9 +257,8 @@
     if (autoFilterToggle) autoFilterToggle.checked = Boolean(mediaSettings.auto_filter);
     if (autoSaveToggle) autoSaveToggle.checked = Boolean(mediaSettings.auto_save);
 
-    if (saveFolderPath) {
-      saveFolderPath.textContent = String(mediaSettings.auto_save_folder_label || '浏览器默认位置');
-    }
+    // Refresh auto-save folder UI (avoid misleading "default browser location" wording)
+    updateAutoSaveUiState();
   }
 
   function refreshMediaSettingsFromControls() {
@@ -266,10 +292,17 @@
     if (autoFilterToggle) mediaSettings.auto_filter = Boolean(autoFilterToggle.checked);
     if (autoSaveToggle) mediaSettings.auto_save = Boolean(autoSaveToggle.checked);
 
-    if (saveFolderPath) {
-      mediaSettings.auto_save_folder_label = String(saveFolderPath.textContent || '').trim() || DEFAULT_SETTINGS.auto_save_folder_label;
+    // Auto-save folder state is derived from runtime capability + current (non-persistable) handle.
+    if (!mediaSettings.auto_save) {
+      mediaSettings.auto_save_use_fs = false;
+      mediaSettings.auto_save_folder_label = '未启用';
+    } else if (useFileSystemAPI && directoryHandle) {
+      mediaSettings.auto_save_use_fs = true;
+      mediaSettings.auto_save_folder_label = String(directoryHandle && directoryHandle.name ? directoryHandle.name : '已选择目录');
+    } else {
+      mediaSettings.auto_save_use_fs = false;
+      mediaSettings.auto_save_folder_label = DEFAULT_SETTINGS.auto_save_folder_label;
     }
-    mediaSettings.auto_save_use_fs = Boolean(useFileSystemAPI && directoryHandle);
   }
 
   function setStatus(state, text) {
@@ -307,6 +340,42 @@
       clearTimeout(softStopGraceTimer);
       softStopGraceTimer = null;
     }
+    if (softStopIdleTimer) {
+      clearTimeout(softStopIdleTimer);
+      softStopIdleTimer = null;
+    }
+  }
+
+  function touchStreamActivity() {
+    lastStreamEventAt = Date.now();
+  }
+
+  function scheduleSoftStopIdleClose() {
+    if (!stopRequested) return;
+
+    setStatus('connecting', '软停止：等待输出完成');
+
+    // Poll until the stream has been idle for a while, so partial cards have time to turn final.
+    const tick = () => {
+      if (!stopRequested) return;
+
+      const now = Date.now();
+      const sinceLast = lastStreamEventAt > 0 ? (now - lastStreamEventAt) : Number.POSITIVE_INFINITY;
+
+      if (sinceLast >= SOFT_STOP_IDLE_MS) {
+        toast('软停止结束：已空闲，已关闭连接', 'info');
+        finalizeStopUi();
+        return;
+      }
+
+      softStopIdleTimer = setTimeout(tick, 250);
+    };
+
+    if (softStopIdleTimer) {
+      clearTimeout(softStopIdleTimer);
+      softStopIdleTimer = null;
+    }
+    softStopIdleTimer = setTimeout(tick, 250);
   }
 
   function clearNonFinalItems() {
@@ -407,20 +476,22 @@
     clearSoftStopTimers();
     stopRequested = true;
 
+    // Keep streaming for a while so partial cards can turn final; close only after idle or timeout.
+    touchStreamActivity();
     setStatus('connecting', reason === 'max_reached' ? '达到上限，软停止等待中' : '软停止等待中');
 
     const graceMs = clampInt(mediaSettings.soft_stop_grace_ms, 0, 10000, 800);
     softStopGraceTimer = setTimeout(() => {
       softStopGraceTimer = null;
-      if (inFlightTasks <= 0) {
-        finalizeStopUi();
-      }
+      scheduleSoftStopIdleClose();
     }, graceMs);
 
     if (withTimeout) {
       const sec = clampInt(mediaSettings.soft_stop_timeout_sec, 1, 120, 12);
       softStopForceTimer = setTimeout(() => {
         softStopForceTimer = null;
+        setStatus('error', '软停超时，强制停止');
+        toast('软停超时：已强制停止并清理未完成图片', 'warning');
         forceStopNow({ reason: reason || 'soft_timeout', clearPartials: true });
       }, sec * 1000);
     }
@@ -480,7 +551,7 @@
         const progressed = markTaskFailed(taskId);
         if (progressed) ensureDesiredTasks();
       } else if (stopRequested && inFlightTasks <= 0) {
-        finalizeStopUi();
+        scheduleSoftStopIdleClose();
       }
     };
 
@@ -495,7 +566,7 @@
     if (launchInProgress) return;
     if (!shouldLaunchMoreTasks()) {
       if (stopRequested && inFlightTasks <= 0) {
-        finalizeStopUi();
+        scheduleSoftStopIdleClose();
       }
       return;
     }
@@ -857,6 +928,222 @@
     return '';
   }
 
+  // --- Media library (favorite) ---
+  let favoriteIndexLoaded = false;
+  const favoriteByParentPostId = new Map(); // parent_post_id -> library item id
+
+  function isSafeMediaLibraryImageUrl(url) {
+    const u = String(url || '').trim();
+    if (!u) return false;
+    if (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('/')) return true;
+    // Allow small data: URLs only to avoid bloating requests/storage
+    if (u.startsWith('data:') && u.length <= 1800) return true;
+    return false;
+  }
+
+  function buildStableLibraryIdForImage({ parentPostId, imageUrl }) {
+    const pid = String(parentPostId || '').trim();
+    if (pid) return `img_${pid}`;
+    const u = String(imageUrl || '').trim();
+    if (u) return `imgu_${hashStringToHex(u)}`;
+    return '';
+  }
+
+  function setFavUi(btn, on) {
+    if (!btn) return;
+    const isOn = Boolean(on);
+    btn.classList.toggle('is-on', isOn);
+    btn.setAttribute('aria-pressed', isOn ? 'true' : 'false');
+    btn.textContent = isOn ? '已藏' : '收藏';
+    btn.title = isOn ? '取消收藏（仍保留记录）' : '收藏入库';
+  }
+
+  function refreshFavoriteUiForExistingWaterfallItems() {
+    if (!waterfall) return;
+    const items = Array.from(waterfall.querySelectorAll('.media-item'));
+    for (const item of items) {
+      if (!item || !item.dataset) continue;
+      const pid = String(item.dataset.imageId || '').trim();
+      if (!pid) continue;
+
+      const libId = String(favoriteByParentPostId.get(pid) || '').trim();
+      if (!libId) continue;
+
+      // Mark dataset and update button UI
+      item.dataset.favorite = '1';
+      item.dataset.libraryId = libId;
+
+      const favBtn = item.querySelector('.media-fav-btn');
+      if (favBtn) {
+        setFavUi(favBtn, true);
+      }
+    }
+  }
+
+  async function preloadFavoriteIndex() {
+    if (favoriteIndexLoaded) return;
+    favoriteIndexLoaded = true;
+
+    try {
+      const authHeader = await ensurePublicKey();
+      if (authHeader === null) return;
+
+      const params = new URLSearchParams();
+      params.set('page', '1');
+      params.set('page_size', '200');
+      params.set('media_type', 'image');
+      params.set('favorite_only', 'true');
+
+      const res = await fetch(`/v1/public/media_library/list?${params.toString()}`, {
+        method: 'GET',
+        headers: {
+          ...buildAuthHeaders(authHeader),
+        },
+      });
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const items = Array.isArray(data && data.items) ? data.items : [];
+      for (const it of items) {
+        if (!it || typeof it !== 'object') continue;
+        const pid = String(it.parent_post_id || '').trim();
+        const id = String(it.id || '').trim();
+        if (pid && id) {
+          favoriteByParentPostId.set(pid, id);
+        }
+      }
+
+      // After index is loaded, refresh already-rendered cards (fix late-highlight issue).
+      refreshFavoriteUiForExistingWaterfallItems();
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  async function favoriteImageItem({ parentPostId, prompt, sourceImageUrl, imageUrl, extra, id }) {
+    const authHeader = await ensurePublicKey();
+    if (authHeader === null) {
+      toast('请先配置 Public Key', 'error');
+      window.location.href = '/login';
+      return null;
+    }
+
+    const payload = {
+      id: String(id || '').trim() || undefined,
+      media_type: 'image',
+      prompt: String(prompt || '').trim(),
+      parent_post_id: String(parentPostId || '').trim(),
+      source_image_url: String(sourceImageUrl || '').trim(),
+      image_url: isSafeMediaLibraryImageUrl(imageUrl) ? String(imageUrl || '').trim() : '',
+      extra: (extra && typeof extra === 'object') ? extra : {},
+    };
+
+    const res = await fetch('/v1/public/media_library/favorite', {
+      method: 'POST',
+      headers: {
+        ...buildAuthHeaders(authHeader),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      throw new Error(await res.text() || 'favorite_failed');
+    }
+    const data = await res.json();
+    return data && data.item ? data.item : null;
+  }
+
+  async function unfavoriteLibraryItemById(libraryId) {
+    const authHeader = await ensurePublicKey();
+    if (authHeader === null) {
+      toast('请先配置 Public Key', 'error');
+      window.location.href = '/login';
+      return false;
+    }
+
+    const id = String(libraryId || '').trim();
+    if (!id) return false;
+
+    const res = await fetch('/v1/public/media_library/unfavorite', {
+      method: 'POST',
+      headers: {
+        ...buildAuthHeaders(authHeader),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ id }),
+    });
+    return res.ok;
+  }
+
+  async function toggleFavoriteForWaterfallItem(item, favBtn) {
+    if (!item || !item.dataset) return;
+
+    const parentPostId = String(item.dataset.imageId || '').trim();
+    const prompt = String(item.dataset.prompt || '').trim();
+    const sourceImageUrl = String(item.dataset.sourceImageUrl || '').trim();
+    const imageUrl = String(item.dataset.imageUrl || '').trim();
+    const sequence = clampInt(item.dataset.sequence, 1, 999999, 0);
+
+    const currentOn = String(item.dataset.favorite || '0') === '1';
+    favBtn.disabled = true;
+
+    try {
+      if (!currentOn) {
+        const stableId = buildStableLibraryIdForImage({ parentPostId, imageUrl }) || '';
+        const resp = await favoriteImageItem({
+          parentPostId,
+          prompt,
+          sourceImageUrl,
+          imageUrl,
+          id: stableId,
+          extra: {
+            source: 'media',
+            sequence,
+          },
+        });
+
+        const savedId = String(resp && resp.id ? resp.id : stableId).trim();
+        if (parentPostId && savedId) {
+          favoriteByParentPostId.set(parentPostId, savedId);
+        }
+
+        item.dataset.favorite = '1';
+        if (savedId) item.dataset.libraryId = savedId;
+        setFavUi(favBtn, true);
+        toast('已收藏', 'success');
+        return;
+      }
+
+      const libraryId =
+        String(item.dataset.libraryId || '').trim()
+        || (parentPostId ? String(favoriteByParentPostId.get(parentPostId) || '').trim() : '');
+
+      if (!libraryId) {
+        toast('缺少 libraryId，无法取消收藏', 'error');
+        return;
+      }
+
+      const ok = await unfavoriteLibraryItemById(libraryId);
+      if (!ok) {
+        toast('取消收藏失败', 'error');
+        return;
+      }
+
+      item.dataset.favorite = '0';
+      // Keep dataset.libraryId for possible future re-favorite, but remove from global index to avoid false "on" for new cards.
+      if (parentPostId) {
+        favoriteByParentPostId.delete(parentPostId);
+      }
+
+      setFavUi(favBtn, false);
+      toast('已取消收藏', 'info');
+    } catch (e) {
+      toast('收藏操作失败', 'error');
+    } finally {
+      favBtn.disabled = false;
+    }
+  }
+
   function tryCacheDataUrlForDetail(dataUrl, cacheKey) {
     const key = String(cacheKey || '').trim();
     const value = String(dataUrl || '').trim();
@@ -867,6 +1154,352 @@
     } catch (e) {
       return '';
     }
+  }
+
+  function tryCacheDataUrlForWaterfall(dataUrl, cacheKey) {
+    const key = String(cacheKey || '').trim();
+    const value = String(dataUrl || '').trim();
+    if (!key || !value) return '';
+    try {
+      sessionStorage.setItem(key, value);
+      return key;
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function readWaterfallCachedDataUrl(cacheKey) {
+    const key = String(cacheKey || '').trim();
+    if (!key) return '';
+    try {
+      return String(sessionStorage.getItem(key) || '');
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function clearWaterfallSession() {
+    try {
+      const raw = sessionStorage.getItem(WATERFALL_SESSION_KEY);
+      const data = raw ? safeParseJson(raw) : null;
+      if (data && typeof data === 'object' && Array.isArray(data.items)) {
+        data.items.forEach((it) => {
+          const ck = it && typeof it === 'object' ? String(it.cache_key || '').trim() : '';
+          if (ck) {
+            try {
+              sessionStorage.removeItem(ck);
+            } catch (e) {
+              // ignore
+            }
+          }
+        });
+      }
+    } catch (e) {
+      // ignore
+    }
+    try {
+      sessionStorage.removeItem(WATERFALL_SESSION_KEY);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function persistWaterfallSession() {
+    if (!waterfall) return;
+
+    const all = Array.from(waterfall.querySelectorAll('.media-item'));
+    const maxItems = 120;
+
+    const reverse = Boolean(reverseInsertToggle && reverseInsertToggle.checked);
+    const items = reverse ? all.slice(0, maxItems) : all.slice(Math.max(0, all.length - maxItems));
+
+    const payload = {
+      v: 1,
+      ts: Date.now(),
+      scroll_y: Number.isFinite(window.scrollY) ? window.scrollY : 0,
+      reverse_insert: reverse,
+      items: [],
+    };
+
+    for (const el of items) {
+      if (!el || !el.dataset) continue;
+
+      const imageId = String(el.dataset.imageId || '').trim();
+      const url = String(el.dataset.imageUrl || '').trim();
+      const prompt = String(el.dataset.prompt || '').trim();
+      const sourceImageUrl = String(el.dataset.sourceImageUrl || '').trim();
+      const isFinal = String(el.dataset.isFinal || '0') === '1';
+      const sequence = clampInt(el.dataset.sequence, 1, 999999, 0);
+
+      let imageUrl = url;
+      let cacheKey = '';
+
+      // Avoid storing huge data URLs in the JSON payload
+      if (imageUrl.startsWith('data:') && imageUrl.length > 1800) {
+        const keyBase = imageId ? `media_waterfall_cache_${imageId}` : `media_waterfall_cache_seq_${sequence || Date.now()}`;
+        const key = `${keyBase}_${Date.now()}`;
+        const cached = tryCacheDataUrlForWaterfall(imageUrl, key);
+        if (cached) {
+          cacheKey = cached;
+          imageUrl = '';
+        }
+      }
+
+      payload.items.push({
+        image_id: imageId,
+        image_url: imageUrl,
+        cache_key: cacheKey,
+        prompt,
+        source_image_url: sourceImageUrl,
+        is_final: isFinal,
+        sequence,
+        favorite: String(el.dataset.favorite || '0') === '1',
+        library_id: String(el.dataset.libraryId || '').trim(),
+      });
+    }
+
+    try {
+      sessionStorage.setItem(WATERFALL_SESSION_KEY, JSON.stringify(payload));
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function schedulePersistWaterfallSession() {
+    if (persistWaterfallTimer) {
+      clearTimeout(persistWaterfallTimer);
+      persistWaterfallTimer = null;
+    }
+    persistWaterfallTimer = setTimeout(() => {
+      persistWaterfallTimer = null;
+      persistWaterfallSession();
+    }, 250);
+  }
+
+  function renderRestoredItem({ imageId, dataUrl, prompt, sourceImageUrl, isFinal, sequence, favorite, libraryId }) {
+    ensureWaterfallExists();
+
+    const seq = clampInt(sequence, 1, 999999, 0) || (streamSequence + 1);
+
+    const item = document.createElement('div');
+    item.className = 'media-item';
+    item.dataset.imageId = String(imageId || '').trim();
+    item.dataset.imageUrl = String(dataUrl || '').trim();
+    item.dataset.isFinal = Boolean(isFinal) ? '1' : '0';
+    item.dataset.sequence = String(seq);
+
+    if (Boolean(favorite)) {
+      item.dataset.favorite = '1';
+    }
+    const lid = String(libraryId || '').trim();
+    if (lid) {
+      item.dataset.libraryId = lid;
+    }
+
+    const checkbox = document.createElement('div');
+    checkbox.className = 'media-checkbox';
+    checkbox.setAttribute('aria-hidden', 'true');
+
+    const p = String(prompt || '').trim();
+    const src = String(sourceImageUrl || '').trim();
+    if (p) item.dataset.prompt = p;
+    if (src) item.dataset.sourceImageUrl = src;
+
+    item.addEventListener('click', (e) => {
+      const target = e && e.target ? e.target : null;
+      if (target && target.closest && (target.closest('.media-download-btn') || target.closest('.media-fav-btn'))) return;
+
+      if (isSelectionMode) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleImageSelection(item);
+        return;
+      }
+
+      // Ensure session is persisted before navigation (for reliable "Back" restore)
+      persistWaterfallSession();
+
+      const url = String(item.dataset.imageUrl || '').trim();
+      const id = String(item.dataset.imageId || '').trim();
+      const pp = String(item.dataset.prompt || '').trim();
+      const ss = String(item.dataset.sourceImageUrl || '').trim();
+
+      window.location.href = buildMediaDetailUrl({
+        imageUrl: url,
+        imageId: id,
+        prompt: pp,
+        sourceImageUrl: ss,
+        sequence: seq,
+      });
+    });
+
+    const favBtn = document.createElement('button');
+    favBtn.type = 'button';
+    favBtn.className = 'media-fav-btn';
+    favBtn.setAttribute('aria-pressed', 'false');
+    favBtn.textContent = '收藏';
+    favBtn.title = '收藏入库';
+    favBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      await toggleFavoriteForWaterfallItem(item, favBtn);
+    });
+
+    // Apply favorite state: prefer session payload, then fallback to preloaded index
+    const restoredPid = String(item.dataset.imageId || '').trim();
+    const hasSessionFavorite = String(item.dataset.favorite || '0') === '1';
+    if (!hasSessionFavorite) {
+      const restoredLibId = restoredPid ? String(favoriteByParentPostId.get(restoredPid) || '').trim() : '';
+      if (restoredLibId) {
+        item.dataset.favorite = '1';
+        item.dataset.libraryId = restoredLibId;
+      }
+    } else if (!String(item.dataset.libraryId || '').trim()) {
+      const restoredLibId = restoredPid ? String(favoriteByParentPostId.get(restoredPid) || '').trim() : '';
+      if (restoredLibId) {
+        item.dataset.libraryId = restoredLibId;
+      }
+    }
+    setFavUi(favBtn, String(item.dataset.favorite || '0') === '1');
+
+    const downloadBtn = document.createElement('button');
+    downloadBtn.type = 'button';
+    downloadBtn.className = 'media-download-btn';
+    downloadBtn.textContent = '下载';
+    downloadBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const url = String(item.dataset.imageUrl || '').trim();
+      if (!url) {
+        toast('图片地址为空', 'warning');
+        return;
+      }
+      try {
+        const ext = url.startsWith('data:image/png') ? 'png' : 'jpg';
+        const filename = buildFilename({ sequence: seq }, seq, ext);
+        if (url.startsWith('data:')) {
+          downloadDataUrl(url, filename);
+        } else {
+          await downloadByUrl(url, filename);
+        }
+        toast('已开始下载', 'success');
+      } catch (err) {
+        toast('下载失败', 'error');
+      }
+    });
+
+    const img = document.createElement('img');
+    img.className = 'media-item-img';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.alt = imageId ? `image-${imageId}` : `image-${seq}`;
+    img.src = dataUrl;
+
+    const metaBar = document.createElement('div');
+    metaBar.className = 'media-item-meta';
+
+    const left = document.createElement('div');
+    left.textContent = `#${seq}`;
+
+    const right = document.createElement('span');
+    right.textContent = '';
+
+    metaBar.appendChild(left);
+    metaBar.appendChild(right);
+
+    item.appendChild(checkbox);
+    item.appendChild(favBtn);
+    item.appendChild(downloadBtn);
+    item.appendChild(img);
+    item.appendChild(metaBar);
+
+    waterfall.appendChild(item);
+
+    if (item.dataset.imageId) {
+      streamImageMap.set(item.dataset.imageId, item);
+    }
+
+    imageCount += 1;
+    if (Boolean(isFinal)) {
+      runFinalCount += 1;
+    }
+
+    return item;
+  }
+
+  function restoreWaterfallSession() {
+    if (!waterfall) return false;
+    if (waterfall.children && waterfall.children.length > 0) return false;
+
+    let raw = '';
+    try {
+      raw = String(sessionStorage.getItem(WATERFALL_SESSION_KEY) || '');
+    } catch (e) {
+      return false;
+    }
+    if (!raw) return false;
+
+    const data = safeParseJson(raw);
+    if (!data || typeof data !== 'object') return false;
+    if (data.v !== 1 || !Array.isArray(data.items)) return false;
+
+    const ts = Number(data.ts);
+    if (!Number.isFinite(ts) || (Date.now() - ts) > WATERFALL_SESSION_TTL_MS) {
+      return false;
+    }
+
+    // Reset counters but don't clear the saved session
+    exitSelectionMode();
+    waterfall.innerHTML = '';
+    streamImageMap.clear();
+    imageCount = 0;
+    runFinalCount = 0;
+
+    let maxSeq = 0;
+    for (const it of data.items) {
+      if (!it || typeof it !== 'object') continue;
+      const seq = clampInt(it.sequence, 1, 999999, 0);
+      const imageId = String(it.image_id || '').trim();
+      const prompt = String(it.prompt || '').trim();
+      const sourceImageUrl = String(it.source_image_url || '').trim();
+      const isFinal = Boolean(it.is_final);
+      const favorite = Boolean(it.favorite);
+      const libraryId = String(it.library_id || '').trim();
+
+      let url = String(it.image_url || '').trim();
+      if (!url) {
+        const cached = readWaterfallCachedDataUrl(it.cache_key);
+        if (cached) url = cached;
+      }
+      if (!url) continue;
+
+      renderRestoredItem({
+        imageId,
+        dataUrl: url,
+        prompt,
+        sourceImageUrl,
+        isFinal,
+        sequence: seq,
+        favorite,
+        libraryId,
+      });
+
+      if (seq > maxSeq) maxSeq = seq;
+    }
+
+    streamSequence = Math.max(streamSequence, maxSeq);
+    updateCount(runFinalCount);
+
+    if (emptyState) {
+      emptyState.style.display = imageCount > 0 ? 'none' : 'flex';
+    }
+
+    const scrollY = clampInt(data.scroll_y, 0, 10_000_000, 0);
+    setTimeout(() => {
+      window.scrollTo({ top: scrollY, behavior: 'auto' });
+    }, 0);
+
+    return imageCount > 0;
   }
 
   function buildMediaDetailUrl({ imageUrl, imageId, prompt, sourceImageUrl, sequence }) {
@@ -958,7 +1591,7 @@
 
       item.addEventListener('click', (e) => {
         const target = e && e.target ? e.target : null;
-        if (target && target.closest && target.closest('.media-download-btn')) return;
+        if (target && target.closest && (target.closest('.media-download-btn') || target.closest('.media-fav-btn'))) return;
 
         if (isSelectionMode) {
           e.preventDefault();
@@ -966,6 +1599,9 @@
           toggleImageSelection(item);
           return;
         }
+
+        // Ensure session is persisted before navigation (for reliable "Back" restore)
+        persistWaterfallSession();
 
         const url = String(item.dataset.imageUrl || '').trim();
         const id = String(item.dataset.imageId || '').trim();
@@ -979,6 +1615,27 @@
           sequence,
         });
       });
+
+      const favBtn = document.createElement('button');
+      favBtn.type = 'button';
+      favBtn.className = 'media-fav-btn';
+      favBtn.setAttribute('aria-pressed', 'false');
+      favBtn.textContent = '收藏';
+      favBtn.title = '收藏入库';
+      favBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        await toggleFavoriteForWaterfallItem(item, favBtn);
+      });
+
+      // Apply preloaded favorite state (best-effort)
+      const pid = String(item.dataset.imageId || '').trim();
+      const libId = pid ? String(favoriteByParentPostId.get(pid) || '').trim() : '';
+      if (libId) {
+        item.dataset.favorite = '1';
+        item.dataset.libraryId = libId;
+      }
+      setFavUi(favBtn, String(item.dataset.favorite || '0') === '1');
 
       const downloadBtn = document.createElement('button');
       downloadBtn.type = 'button';
@@ -1026,6 +1683,7 @@
       metaBar.appendChild(right);
 
       item.appendChild(checkbox);
+      item.appendChild(favBtn);
       item.appendChild(downloadBtn);
       item.appendChild(img);
       item.appendChild(metaBar);
@@ -1088,6 +1746,7 @@
       }
     }
 
+    schedulePersistWaterfallSession();
     return { item, isNew };
   }
 
@@ -1138,6 +1797,7 @@
     }
 
     if (data.type === 'image_generation.partial_image' || data.type === 'image_generation.completed') {
+      touchStreamActivity();
       const imageId = data.image_id || data.imageId;
       const payload = data.b64_json || data.url || data.image;
       if (!payload || !imageId) {
@@ -1175,6 +1835,7 @@
     }
 
     if (data.type === 'image') {
+      touchStreamActivity();
       const kept = appendImage(data.b64_json, data);
       if (ctx && ctx.taskId) {
         const progressed = markTaskDone(ctx.taskId);
@@ -1199,6 +1860,7 @@
     }
 
     if (data.type === 'status') {
+      touchStreamActivity();
       if (data.status === 'running') {
         setStatus('connected', connectionMode === 'sse' ? '生成中 (SSE)' : '生成中');
         lastRunId = data.run_id || '';
@@ -1382,6 +2044,7 @@
     if (emptyState) {
       emptyState.style.display = 'flex';
     }
+    clearWaterfallSession();
   }
 
   function bindAdvancedToggle() {
@@ -1586,6 +2249,13 @@
   if (batchDownloadBtn) {
     batchDownloadBtn.addEventListener('click', toggleSelectionMode);
   }
+  if (libraryBtn) {
+    libraryBtn.addEventListener('click', () => {
+      // Ensure session is persisted before navigation (so Back restore still works)
+      persistWaterfallSession();
+      window.location.href = '/media/library';
+    });
+  }
   if (toggleSelectAllBtn) {
     toggleSelectAllBtn.addEventListener('click', toggleSelectAll);
   }
@@ -1659,12 +2329,30 @@
     if (autoFollowToggle) autoFollowToggle.addEventListener('change', onPersist);
     if (reverseInsertToggle) reverseInsertToggle.addEventListener('change', onPersist);
     if (autoFilterToggle) autoFilterToggle.addEventListener('change', onPersist);
-    if (autoSaveToggle) autoSaveToggle.addEventListener('change', onPersist);
+    if (autoSaveToggle) {
+      autoSaveToggle.addEventListener('change', () => {
+        onPersist();
+        updateAutoSaveUiState();
+      });
+    }
   }
 
   // Load & apply persisted settings before binding events
   mediaSettings = loadMediaSettings();
   applyMediaSettingsToControls();
+  updateAutoSaveUiState();
+
+  // T6: restore waterfall session if available (e.g., browser Back from detail page)
+  restoreWaterfallSession();
+
+  window.addEventListener('pagehide', () => {
+    persistWaterfallSession();
+  });
+
+  window.addEventListener('pageshow', () => {
+    // Some browsers may not keep the page in BFCache; restore if empty
+    restoreWaterfallSession();
+  });
 
   if (modeButtons.length > 0) {
     setModePreference(mediaSettings.mode_preference || 'auto', false);
@@ -1683,15 +2371,54 @@
     });
   }
 
-  function updateSaveFolderButtonState() {
-    if (!selectSaveFolderBtn) return;
+  function updateAutoSaveUiState() {
     const supported = 'showDirectoryPicker' in window;
-    selectSaveFolderBtn.disabled = !supported;
+    const enabled = Boolean(autoSaveToggle && autoSaveToggle.checked);
+    const hasHandle = Boolean(useFileSystemAPI && directoryHandle && directoryHandle.name);
+
+    if (saveFolderPath) {
+      if (!enabled) {
+        saveFolderPath.textContent = '未启用';
+      } else if (hasHandle) {
+        saveFolderPath.textContent = String(directoryHandle.name);
+      } else {
+        saveFolderPath.textContent = DEFAULT_SETTINGS.auto_save_folder_label;
+      }
+    }
+
+    if (saveFolderHint) {
+      if (!enabled) {
+        saveFolderHint.textContent = '开启“生成后自动保存”后，可选择保存目录（可选）。';
+      } else if (!supported) {
+        saveFolderHint.textContent = '当前浏览器不支持目录写入，将使用浏览器下载（不会修改默认下载路径）。';
+      } else if (hasHandle) {
+        saveFolderHint.textContent = '已启用目录写入（仅本浏览器本次会话有效）；不会修改浏览器默认下载路径。';
+      } else {
+        saveFolderHint.textContent = '可选：选择保存目录（仅部分浏览器支持）；未选择则使用浏览器下载。';
+      }
+    }
+
+    if (!selectSaveFolderBtn) return;
+
+    if (!enabled) {
+      selectSaveFolderBtn.disabled = true;
+      selectSaveFolderBtn.title = '开启自动保存后可选';
+      return;
+    }
+
+    if (!supported) {
+      selectSaveFolderBtn.disabled = true;
+      selectSaveFolderBtn.title = '当前浏览器不支持目录写入';
+      return;
+    }
+
+    selectSaveFolderBtn.disabled = false;
+    selectSaveFolderBtn.title = '选择一个目录用于写入文件（不会修改默认下载路径）';
   }
 
   function bindAutoSaveFolderSelection() {
     if (!selectSaveFolderBtn) return;
-    updateSaveFolderButtonState();
+    updateAutoSaveUiState();
 
     if (!('showDirectoryPicker' in window)) {
       return;
@@ -1701,12 +2428,12 @@
       try {
         directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
         useFileSystemAPI = true;
-        if (saveFolderPath) {
-          saveFolderPath.textContent = directoryHandle && directoryHandle.name ? directoryHandle.name : '已选择目录';
-        }
+
+        updateAutoSaveUiState();
         refreshMediaSettingsFromControls();
         persistMediaSettings();
-        toast(`已选择保存目录：${directoryHandle.name}`, 'success');
+
+        toast(`已选择保存目录：${directoryHandle && directoryHandle.name ? directoryHandle.name : '已选择目录'}`, 'success');
       } catch (e) {
         if (e && e.name === 'AbortError') return;
         toast('选择保存目录失败', 'error');
@@ -1720,6 +2447,7 @@
   bindRunSettingsPersistence();
   bindAutoSaveFolderSelection();
 
+  preloadFavoriteIndex();
   loadFilterDefaults();
   setButtons(false);
   setStatus('', '未连接');
