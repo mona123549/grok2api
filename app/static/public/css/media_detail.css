@@ -151,6 +151,9 @@ html[data-theme='dark'] {
   border: 1px solid var(--md-border);
   background: var(--md-surface);
   padding: 14px;
+
+  /* Allow shrinking inside grid column */
+  min-width: 0;
 }
 
 .media-detail-title-row {
@@ -372,6 +375,9 @@ html[data-theme='dark'] .media-detail-action-btn.is-favorite-on {
   border-radius: 16px;
   background: var(--md-surface);
   padding: 14px;
+
+  /* Allow shrinking inside grid column; prevent long content from pushing column width */
+  min-width: 0;
 }
 
 .media-detail-video-head {
@@ -511,12 +517,21 @@ html[data-theme='dark'] .media-detail-video-item {
   gap: 10px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--md-border);
+
+  /* Ensure flex children can shrink for ellipsis */
+  min-width: 0;
 }
 
 .media-detail-video-item-title {
   font-size: 12px;
   font-weight: 700;
   color: var(--accents-7);
+
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .media-detail-video-item-status {
@@ -834,6 +849,15 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
     height: calc(100% - var(--md-composer-footprint));
     max-height: calc(100% - var(--md-composer-footprint));
     align-items: stretch;
+
+    /* Desktop: stabilize column widths to prevent content-driven relayout causing "stage zoom" jumps */
+    grid-template-columns: 240px minmax(0, 1fr) 260px;
+  }
+
+  /* Grid items must be allowed to shrink; avoid min-content sizing affecting tracks */
+  .media-detail-video-column,
+  .media-detail-panel {
+    min-width: 0;
   }
 
   /* Disable legacy sticky architecture entirely */
@@ -860,6 +884,9 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
     min-height: 0; /* critical for flex overflow scrolling */
     overflow: auto;
 
+    /* Stabilize scrollbar reservation to avoid layout width "jumps" */
+    scrollbar-gutter: stable;
+
     /* Stop scroll chaining (touchpad / trackpad) from leaking to outer layers */
     overscroll-behavior: contain;
     touch-action: pan-y;
@@ -877,6 +904,31 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
   .media-detail-video-results::-webkit-scrollbar {
     width: 0;
     height: 0;
+  }
+
+  /* Desktop: keep card actions as a constant placeholder to prevent height relayout jank */
+  .media-detail-video-item-actions {
+    /* Keep original layout (flex wrap), but prevent geometry changes on hover/selected */
+    min-height: 72px;
+    max-height: 72px;
+    padding: 0 10px 10px;
+
+    overflow: hidden;
+
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+
+    transition: opacity 0.15s ease, visibility 0s linear 0.15s;
+  }
+
+  .media-detail-video-item:hover .media-detail-video-item-actions,
+  .media-detail-video-item.is-selected .media-detail-video-item-actions {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+
+    transition: opacity 0.15s ease;
   }
 
   /* Optional: thin invisible wheel sensor (Grok-like) */
@@ -906,6 +958,9 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
     overflow: hidden;
     min-height: 0;
     height: 100%;
+
+    /* Isolate stage from surrounding layout/paint to reduce relayout jank */
+    contain: layout paint;
   }
 
   .media-detail-image {
@@ -929,6 +984,9 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
     flex: 1;
     min-height: 0;
     overflow: auto;
+
+    /* Stabilize scrollbar reservation to avoid layout width "jumps" */
+    scrollbar-gutter: stable;
 
     /* Keep any internal overscroll from bubbling into the "locked viewport" layers */
     overscroll-behavior: contain;

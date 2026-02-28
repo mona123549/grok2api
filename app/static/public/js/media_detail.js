@@ -52,6 +52,39 @@
   // Media detail stage video playback preference (muted/volume)
   const STAGE_PLAYBACK_PREF_KEY = 'media_detail_stage_playback_pref_v1';
 
+  const DESKTOP_MQL = (window.matchMedia && typeof window.matchMedia === 'function')
+    ? window.matchMedia('(min-width: 1101px)')
+    : null;
+
+  function isDesktopLayout() {
+    if (DESKTOP_MQL) return Boolean(DESKTOP_MQL.matches);
+    return window.innerWidth >= 1101;
+  }
+
+  function ensureItemVisibleInScroller(scroller, item, marginPx = 8) {
+    if (!scroller || !item) return;
+    if (!(scroller instanceof HTMLElement)) return;
+    if (!(item instanceof HTMLElement)) return;
+
+    const margin = Math.max(0, Number(marginPx || 0));
+
+    const s = scroller.getBoundingClientRect();
+    const r = item.getBoundingClientRect();
+
+    // If item is above visible area
+    if (r.top < s.top + margin) {
+      const dy = (s.top + margin) - r.top;
+      scroller.scrollTop = scroller.scrollTop - dy;
+      return;
+    }
+
+    // If item is below visible area
+    if (r.bottom > s.bottom - margin) {
+      const dy = r.bottom - (s.bottom - margin);
+      scroller.scrollTop = scroller.scrollTop + dy;
+    }
+  }
+
   const videoState = {
     running: false,
     authHeader: '',
@@ -1268,8 +1301,13 @@
       card.classList.add('is-selected');
 
       // Keep selected item visible in filmstrip scroll container
+      // Desktop: only scroll the left scroller to avoid any ancestor scroll/relayout side effects.
       try {
-        card.scrollIntoView({ block: 'nearest' });
+        if (isDesktopLayout() && detailVideoResults) {
+          ensureItemVisibleInScroller(detailVideoResults, card, 12);
+        } else {
+          card.scrollIntoView({ block: 'nearest' });
+        }
       } catch (e) {
         // ignore
       }
