@@ -831,44 +831,62 @@
   function renderVideoHtml(item, html) {
     const body = item && item.querySelector ? item.querySelector('.media-detail-video-item-body') : null;
     if (!body) return;
-    body.innerHTML = html;
-    const videoEl = body.querySelector('video');
-    let url = '';
-    if (videoEl) {
-      // Keep list preview lightweight; stage will be the main player.
-      videoEl.controls = false;
-      videoEl.muted = true;
-      videoEl.preload = 'metadata';
-      videoEl.playsInline = true;
-      videoEl.setAttribute('playsinline', '');
-      videoEl.setAttribute('webkit-playsinline', '');
-      const source = videoEl.querySelector('source');
-      if (source && source.getAttribute('src')) url = source.getAttribute('src');
-      else if (videoEl.getAttribute('src')) url = videoEl.getAttribute('src');
 
-      const normalized = normalizeLocalVideoFileUrl(url);
-      if (normalized && normalized !== url) {
-        if (source && source.getAttribute('src')) source.setAttribute('src', normalized);
-        else if (videoEl.getAttribute('src')) videoEl.setAttribute('src', normalized);
-        url = normalized;
+    // Extract url from the returned HTML without keeping an embedded <video> in the list.
+    let url = '';
+    try {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = String(html || '');
+      const videoEl = tmp.querySelector('video');
+      if (videoEl) {
+        const source = videoEl.querySelector('source');
+        if (source && source.getAttribute('src')) url = source.getAttribute('src');
+        else if (videoEl.getAttribute('src')) url = videoEl.getAttribute('src');
       }
+    } catch (e) {
+      url = '';
     }
-    bindVideoLinks(item, url);
+
+    const normalized = normalizeLocalVideoFileUrl(url);
+    const finalUrl = normalized || url;
+
+    // Keep the static thumb; only update overlay text.
+    setVideoThumbOverlay(item, finalUrl ? '点击播放' : '完成');
+
+    bindVideoLinks(item, finalUrl);
     setVideoItemStatus(item, '完成', 'done');
   }
 
   function renderVideoUrl(item, url) {
     const body = item && item.querySelector ? item.querySelector('.media-detail-video-item-body') : null;
     if (!body) return;
+
     const raw = String(url || '').trim();
     const normalized = normalizeLocalVideoFileUrl(raw);
     const safe = normalized || raw;
-    body.innerHTML = `<video preload="metadata" muted playsinline webkit-playsinline><source src="${safe}" type="video/mp4"></video>`;
+
+    setVideoThumbOverlay(item, safe ? '点击播放' : '完成');
+
     bindVideoLinks(item, safe);
     setVideoItemStatus(item, '完成', 'done');
   }
 
   let currentVideoRunListEl = null;
+
+  // Use the current image as the lightweight thumbnail for all video task cards.
+  // This avoids embedding <video> in the left list (performance + layout stability).
+  let currentVideoThumbUrl = '';
+
+  function setVideoThumbUrl(url) {
+    currentVideoThumbUrl = String(url || '').trim();
+  }
+
+  function setVideoThumbOverlay(item, text) {
+    if (!item || !item.querySelector) return;
+    const el = item.querySelector('.media-detail-video-thumb-overlay');
+    if (!el) return;
+    el.textContent = String(text || '').trim();
+  }
 
   function formatRunTime(ts) {
     const t = typeof ts === 'number' ? ts : Date.now();
@@ -894,6 +912,8 @@
   }
 
   function createVideoRunGroup({ parallel, prompt }) {
+    // Kept for backward compatibility, but current UI no longer groups by "runs".
+    // (Users found "本次生成（X 路）" unnecessary and visually noisy.)
     if (!detailVideoResults) return null;
 
     const runId = `run_${Date.now()}`;
@@ -902,13 +922,12 @@
     wrap.dataset.runId = runId;
     wrap.open = true;
 
-    const safeParallel = Math.max(1, Math.min(4, parseInt(String(parallel || '1'), 10) || 1));
     const promptText = String(prompt || '').trim();
     const summaryPrompt = promptText ? promptText.slice(0, 60) : '';
 
     wrap.innerHTML = `
       <summary class="media-detail-video-run-summary">
-        <div class="media-detail-video-run-title">本次生成（${safeParallel} 路）</div>
+        <div class="media-detail-video-run-title">视频结果</div>
         <div class="media-detail-video-run-meta">${formatRunTime(Date.now())}${summaryPrompt ? ` · ${summaryPrompt}` : ''}</div>
       </summary>
       <div class="media-detail-video-run-body">
@@ -916,14 +935,13 @@
       </div>
     `;
 
-    // Insert newest run at top; fold older ones to keep list compact.
     detailVideoResults.prepend(wrap);
     collapseOlderVideoRuns(wrap);
 
     return wrap.querySelector('.media-detail-video-run-list');
   }
 
-  function createVideoCard(index, taskId, containerEl) {
+  function createVideoCard(index, taskId, containerEl, thumbUrl) {
     const container = containerEl || detailVideoResults;
     if (!container) return null;
 
@@ -936,13 +954,28 @@
         <div class="media-detail-video-item-title">任务 ${index}</div>
         <div class="media-detail-video-item-status running">排队中</div>
       </div>
-      <div class="media-detail-video-item-body">等待上游返回视频流...</div>
+      <div class="media-detail-video-item-body">
+        <div class="media-detail-video-thumb" aria-hidden="true">
+          <img class="media-detail-video-thumb-img" alt="" loading="lazy" decoding="async">
+          <div class="media-detail-video-thumb-overlay">生成中</div>
+        </div>
+      </div>
       <div class="media-detail-video-item-actions">
         <a class="geist-button-outline text-xs px-3 hidden" data-role="open" target="_blank" rel="noopener">打开</a>
         <button class="geist-button-outline text-xs px-3" data-role="download" type="button" disabled>下载</button>
         <button class="geist-button-outline text-xs px-3" data-role="favorite" type="button" aria-pressed="false" title="收藏入库">收藏</button>
       </div>
     `;
+
+    const img = item.querySelector('.media-detail-video-thumb-img');
+    if (img && thumbUrl) {
+      try {
+        img.src = String(thumbUrl || '').trim();
+      } catch (e) {
+        // ignore
+      }
+    }
+
     container.appendChild(item);
     return item;
   }
@@ -1125,18 +1158,18 @@
       return;
     }
 
-    // Create a new run group and append cards into it (newest on top).
-    currentVideoRunListEl = createVideoRunGroup({ parallel: taskIds.length, prompt });
+    // No run grouping: cards are appended directly into the left list (cleaner UI).
+    currentVideoRunListEl = detailVideoResults;
 
     if (detailVideoEmpty) detailVideoEmpty.classList.add('hidden');
 
     videoState.running = true;
     videoState.taskIds = taskIds.slice();
     setVideoButtons(true);
-    setVideoStatus(`运行中（${taskIds.length} 路）`);
+    setVideoStatus('运行中');
 
     taskIds.forEach((taskId, idx) => {
-      const card = createVideoCard(idx + 1, taskId, currentVideoRunListEl);
+      const card = createVideoCard(idx + 1, taskId, currentVideoRunListEl, currentVideoThumbUrl);
       if (!card) return;
       videoState.jobs.set(taskId, {
         taskId,
@@ -1852,6 +1885,9 @@
     const finalSourceImageUrl = String(data.sourceImageUrl || '').trim() || fallbackUrl;
 
     showImage(finalImageUrl);
+
+    // Use the same image as the lightweight thumb for video task cards.
+    setVideoThumbUrl(finalImageUrl);
     setMeta({ ...data, imageUrl: finalImageUrl, sourceImageUrl: finalSourceImageUrl });
 
     bindCopy(copyMainBtn, () => finalImageUrl, '已复制图片地址');
