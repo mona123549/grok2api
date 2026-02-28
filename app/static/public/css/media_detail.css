@@ -856,7 +856,13 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
   html {
     height: 100vh;
     height: 100dvh;
-    overflow: hidden;
+
+    /* Critical: always reserve root scrollbar gutter so viewport width never changes.
+       Prevents the center stage from "growing/shrinking" when a root scrollbar appears/disappears. */
+    overflow-x: hidden;
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+
     overscroll-behavior: none;
   }
 
