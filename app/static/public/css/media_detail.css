@@ -62,152 +62,6 @@ html[data-theme='dark'] {
   }
 }
 
-/* Desktop: Grok-like model
-   - Whole page is locked to 100dvh (no body/main scrolling)
-   - Three columns fill the remaining viewport height
-   - Only left filmstrip is scrollable (right panel only uses minimal internal scroll as fallback)
-*/
-@media (min-width: 1101px) {
-  html {
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-    overscroll-behavior: none;
-  }
-
-  body.public-page {
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-    overscroll-behavior: none;
-  }
-
-  /* main participates in body flex layout; lock it as the non-scroll viewport content area */
-  .public-page main {
-    box-sizing: border-box;
-    height: calc(100vh - var(--md-header-h));
-    height: calc(100dvh - var(--md-header-h));
-    max-height: calc(100vh - var(--md-header-h));
-    max-height: calc(100dvh - var(--md-header-h));
-    overflow: hidden;
-    overscroll-behavior: none;
-
-    /* Desktop should not reserve scroll space; we compute layout height explicitly */
-    padding-bottom: 0 !important;
-
-    /* Override Tailwind's py-* so stage can remain visually centered */
-    padding-top: var(--md-sticky-gap) !important;
-  }
-
-  .media-detail-layout {
-    /* Fill remaining space while keeping fixed bottom composer unobstructed */
-    height: calc(100% - var(--md-composer-footprint));
-    max-height: calc(100% - var(--md-composer-footprint));
-    align-items: stretch;
-  }
-
-  /* Disable legacy sticky architecture entirely */
-  .media-detail-video-surface,
-  .media-detail-stage,
-  .media-detail-panel {
-    position: relative;
-    top: auto;
-    height: 100%;
-    max-height: none;
-    min-height: 0;
-  }
-
-  /* Left column: the only primary scroll container */
-  .media-detail-video-surface {
-    overflow: hidden;
-
-    display: flex;
-    flex-direction: column;
-  }
-
-  .media-detail-video-results {
-    flex: 1;
-    min-height: 0; /* critical for flex overflow scrolling */
-    overflow: auto;
-
-    /* Remove the "scrollbar gutter" */
-    padding-right: 0;
-
-    scroll-snap-type: y proximity;
-
-    /* Hide scrollbars cross-browser while keeping scroll */
-    scrollbar-width: none; /* Firefox */
-    -ms-overflow-style: none; /* IE/Edge legacy */
-  }
-
-  .media-detail-video-results::-webkit-scrollbar {
-    width: 0;
-    height: 0;
-  }
-
-  /* Optional: thin invisible wheel sensor (Grok-like) */
-  .media-detail-video-column {
-    position: relative;
-  }
-
-  .media-detail-left-scroll-sensor {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-
-    /* Try to sit in the grid gap between left column and stage */
-    right: -9px;
-    width: 14px;
-
-    z-index: 6;
-    background: transparent;
-    pointer-events: auto;
-
-    /* Avoid browser gestures competing with wheel delegation */
-    touch-action: none;
-  }
-
-  /* Stage: occupy full column height so internal flex centering is true centering */
-  .media-detail-stage {
-    overflow: hidden;
-  }
-
-  .media-detail-image {
-    max-height: 100%;
-  }
-
-  /* Right panel: avoid being scroll-first; only meta area scrolls if it must */
-  .media-detail-panel {
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-
-  /* Sticky inside the panel is unnecessary now; keep it in normal flow */
-  .media-detail-action-group {
-    position: relative;
-    top: auto;
-  }
-
-  .media-detail-meta {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-
-    scrollbar-width: none; /* Firefox */
-    -ms-overflow-style: none; /* IE/Edge legacy */
-  }
-
-  .media-detail-meta::-webkit-scrollbar {
-    width: 0;
-    height: 0;
-  }
-
-  /* T4 strategy: keep composer height stable on desktop */
-  .media-detail-video-prompt {
-    resize: none;
-  }
-}
 
 .media-detail-stage {
   position: relative;
@@ -936,4 +790,161 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
   padding: 0 12px;
   border-radius: 10px;
   font-size: 12px;
+}
+
+/* Desktop: Grok-like model
+   - Whole page is locked to 100dvh (no body/main scrolling)
+   - Three columns fill the remaining viewport height
+   - Only left filmstrip is scrollable (right panel only uses minimal internal scroll as fallback)
+*/
+@media (min-width: 1101px) {
+  html {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  body.public-page {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  /* main participates in body flex layout; lock it as the non-scroll viewport content area */
+  .public-page main {
+    box-sizing: border-box;
+    height: calc(100vh - var(--md-header-h));
+    height: calc(100dvh - var(--md-header-h));
+    max-height: calc(100vh - var(--md-header-h));
+    max-height: calc(100dvh - var(--md-header-h));
+    overflow: hidden;
+    overscroll-behavior: none;
+
+    /* Desktop should not reserve scroll space; we compute layout height explicitly */
+    padding-bottom: 0 !important;
+
+    /* Override Tailwind's py-* so stage can remain visually centered */
+    padding-top: var(--md-sticky-gap) !important;
+  }
+
+  .media-detail-layout {
+    /* Fill remaining space while keeping fixed bottom composer unobstructed */
+    height: calc(100% - var(--md-composer-footprint));
+    max-height: calc(100% - var(--md-composer-footprint));
+    align-items: stretch;
+  }
+
+  /* Disable legacy sticky architecture entirely */
+  .media-detail-video-surface,
+  .media-detail-stage,
+  .media-detail-panel {
+    position: relative;
+    top: auto;
+    height: 100%;
+    max-height: none;
+    min-height: 0;
+  }
+
+  /* Left column: the only primary scroll container */
+  .media-detail-video-surface {
+    overflow: hidden;
+
+    display: flex;
+    flex-direction: column;
+  }
+
+  .media-detail-video-results {
+    flex: 1;
+    min-height: 0; /* critical for flex overflow scrolling */
+    overflow: auto;
+
+    /* Stop scroll chaining (touchpad / trackpad) from leaking to outer layers */
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+
+    /* Remove the "scrollbar gutter" */
+    padding-right: 0;
+
+    scroll-snap-type: y proximity;
+
+    /* Hide scrollbars cross-browser while keeping scroll */
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge legacy */
+  }
+
+  .media-detail-video-results::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  /* Optional: thin invisible wheel sensor (Grok-like) */
+  .media-detail-video-column {
+    position: relative;
+  }
+
+  .media-detail-left-scroll-sensor {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+
+    /* Try to sit in the grid gap between left column and stage */
+    right: -9px;
+    width: 14px;
+
+    z-index: 6;
+    background: transparent;
+    pointer-events: auto;
+
+    /* Avoid browser gestures competing with wheel delegation */
+    touch-action: none;
+  }
+
+  /* Stage: occupy full column height so internal flex centering is true centering */
+  .media-detail-stage {
+    overflow: hidden;
+    min-height: 0;
+    height: 100%;
+  }
+
+  .media-detail-image {
+    max-height: 100%;
+  }
+
+  /* Right panel: avoid being scroll-first; only meta area scrolls if it must */
+  .media-detail-panel {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Sticky inside the panel is unnecessary now; keep it in normal flow */
+  .media-detail-action-group {
+    position: relative;
+    top: auto;
+  }
+
+  .media-detail-meta {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+
+    /* Keep any internal overscroll from bubbling into the "locked viewport" layers */
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge legacy */
+  }
+
+  .media-detail-meta::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  /* T4 strategy: keep composer height stable on desktop */
+  .media-detail-video-prompt {
+    resize: none;
+  }
 }
