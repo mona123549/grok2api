@@ -528,6 +528,7 @@
     let dragging = false;
     let dragStartY = 0;
     let dragStartThumbTop = 0;
+    let activePointerId = null;
 
     const TRACK_PADDING = 10; // must match CSS top/bottom padding in ::before
 
@@ -605,33 +606,53 @@
       updateThumb();
     });
 
-    // Drag thumb
+    // Drag thumb (during dragging, we must ALSO move the thumb itself; scroll handler is suppressed)
     const onPointerMove = (e) => {
       if (!dragging) return;
+
+      const { trackH } = getMetrics();
+      const thumbH = Math.max(24, detailVideoScrollbarThumb.offsetHeight || 24);
+      const maxThumbTop = Math.max(0, trackH - thumbH);
+
       const dy = (e.clientY - dragStartY);
-      scrollToThumbPosition(dragStartThumbTop + dy, { snap: false });
+      const desiredTop = dragStartThumbTop + dy;
+      const nextThumbTop = clamp(desiredTop, 0, maxThumbTop);
+
+      // Move thumb visually
+      detailVideoScrollbarThumb.style.top = `${TRACK_PADDING + Math.round(nextThumbTop)}px`;
+
+      // Scroll content accordingly
+      scrollToThumbPosition(nextThumbTop, { snap: false });
+
       e.preventDefault();
     };
 
-    const stopDrag = (e) => {
+    const stopDrag = () => {
       if (!dragging) return;
       dragging = false;
+
       document.removeEventListener('pointermove', onPointerMove);
       document.removeEventListener('pointerup', stopDrag);
       document.removeEventListener('pointercancel', stopDrag);
 
       // best-effort release pointer capture
       try {
-        if (e && typeof e.pointerId === 'number') {
-          detailVideoScrollbarThumb.releasePointerCapture(e.pointerId);
+        if (typeof activePointerId === 'number') {
+          detailVideoScrollbarThumb.releasePointerCapture(activePointerId);
         }
       } catch (err) {
         // ignore
       }
+
+      activePointerId = null;
+
+      // Re-sync thumb with scrollTop
+      updateThumb();
     };
 
     detailVideoScrollbarThumb.addEventListener('pointerdown', (e) => {
       dragging = true;
+      activePointerId = e.pointerId;
       dragStartY = e.clientY;
 
       // Ensure thumb is up-to-date before reading position
@@ -1933,6 +1954,46 @@
     });
   }
 
+  function syncComposerFootprintVar(composerEl) {
+    const el = composerEl || document.querySelector('.media-detail-composer');
+    if (!(el instanceof HTMLElement)) return;
+
+    const rect = el.getBoundingClientRect();
+    const h = Math.max(0, rect && rect.height ? rect.height : (el.offsetHeight || 0));
+
+    let bottom = 0;
+    try {
+      const cs = window.getComputedStyle ? getComputedStyle(el) : null;
+      bottom = cs ? parseFloat(String(cs.bottom || '0')) : 0;
+      if (!Number.isFinite(bottom)) bottom = 0;
+    } catch (e) {
+      bottom = 0;
+    }
+
+    // Safety padding: avoid "composer overlaps stage" when zoom/font makes composer taller.
+    const footprint = Math.ceil(h + Math.max(0, bottom) + 8);
+    if (footprint > 0) {
+      document.documentElement.style.setProperty('--md-composer-footprint', `${footprint}px`);
+    }
+  }
+
+  function bindComposerFootprintObserver() {
+    const composer = document.querySelector('.media-detail-composer');
+    if (!(composer instanceof HTMLElement)) return;
+
+    const update = () => syncComposerFootprintVar(composer);
+    update();
+
+    window.addEventListener('resize', update);
+
+    try {
+      const ro = new ResizeObserver(() => update());
+      ro.observe(composer);
+    } catch (e) {
+      // ignore
+    }
+  }
+
   function init() {
     const data = getQueryParams();
 
@@ -2109,6 +2170,7 @@
     setVideoButtons(false);
     setVideoStatus('未开始');
     ensureBuildTagVisible();
+    bindComposerFootprintObserver();
 
     // T10: click backdrop to close stage video preview
     if (stageVideoWrap) {
