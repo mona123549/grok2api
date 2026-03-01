@@ -249,9 +249,151 @@
     return false;
   }
 
+  function ensureModalRoot() {
+    let root = document.getElementById('mlib-modal-root');
+    if (root) return root;
+    root = document.createElement('div');
+    root.id = 'mlib-modal-root';
+    document.body.appendChild(root);
+    return root;
+  }
+
+  function closeModal(node) {
+    try { node.remove(); } catch (e) { /* ignore */ }
+  }
+
+  function openModal(build) {
+    const root = ensureModalRoot();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-[9999] flex items-center justify-center';
+    overlay.innerHTML = `
+      <div class="absolute inset-0 bg-black/50"></div>
+      <div class="relative w-[92vw] max-w-md rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-xl">
+        <div class="p-5" data-modal-body></div>
+      </div>
+    `;
+
+    const body = overlay.querySelector('[data-modal-body]');
+    if (!body) return null;
+
+    const api = {
+      close: () => closeModal(overlay),
+      overlay,
+      body,
+    };
+
+    build(api);
+
+    // click backdrop to close
+    overlay.addEventListener('click', (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.classList.contains('bg-black/50')) {
+        api.close();
+      }
+    });
+
+    // ESC to close
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') api.close();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    overlay.addEventListener('remove', () => document.removeEventListener('keydown', onKeyDown));
+
+    root.appendChild(overlay);
+    return api;
+  }
+
+  function showConfirmDialog(message, opts) {
+    const title = (opts && opts.title) ? String(opts.title) : '确认操作';
+    const okText = (opts && opts.okText) ? String(opts.okText) : '确认';
+    const cancelText = (opts && opts.cancelText) ? String(opts.cancelText) : '取消';
+
+    return new Promise((resolve) => {
+      const api = openModal(({ close, body }) => {
+        body.innerHTML = `
+          <div class="space-y-4">
+            <div class="text-base font-semibold">${title}</div>
+            <div class="text-sm text-[var(--accents-4)] whitespace-pre-wrap"></div>
+            <div class="flex gap-2 justify-end pt-1">
+              <button type="button" class="geist-button-outline mlib-btn" data-cancel>${cancelText}</button>
+              <button type="button" class="geist-button mlib-btn" data-ok>${okText}</button>
+            </div>
+          </div>
+        `;
+        const msgEl = body.querySelector('div.text-sm');
+        if (msgEl) msgEl.textContent = String(message || '').trim();
+
+        const okBtn = body.querySelector('[data-ok]');
+        const cancelBtn = body.querySelector('[data-cancel]');
+
+        if (cancelBtn) {
+          cancelBtn.addEventListener('click', () => {
+            close();
+            resolve(false);
+          });
+        }
+        if (okBtn) {
+          okBtn.addEventListener('click', () => {
+            close();
+            resolve(true);
+          });
+        }
+      });
+
+      if (!api) resolve(false);
+    });
+  }
+
+  function showPersonalKeyDialog() {
+    return new Promise((resolve) => {
+      const api = openModal(({ close, body }) => {
+        body.innerHTML = `
+          <div class="space-y-4">
+            <div class="text-base font-semibold">解锁个人模式</div>
+            <div class="text-sm text-[var(--accents-4)]">请输入个人模式密码（Personal Mode Key）</div>
+            <input type="password" class="geist-input w-full" placeholder="Personal Mode Key" data-key-input />
+            <div class="flex gap-2 justify-end pt-1">
+              <button type="button" class="geist-button-outline mlib-btn" data-cancel>取消</button>
+              <button type="button" class="geist-button mlib-btn" data-ok>解锁</button>
+            </div>
+          </div>
+        `;
+
+        const input = body.querySelector('[data-key-input]');
+        const okBtn = body.querySelector('[data-ok]');
+        const cancelBtn = body.querySelector('[data-cancel]');
+
+        const finish = (val) => {
+          close();
+          resolve(val);
+        };
+
+        if (cancelBtn) cancelBtn.addEventListener('click', () => finish(''));
+        if (okBtn) okBtn.addEventListener('click', () => {
+          const v = (input && input.value) ? String(input.value).trim() : '';
+          finish(v);
+        });
+
+        if (input) {
+          input.focus();
+          input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              const v = String(input.value || '').trim();
+              finish(v);
+            }
+          });
+        }
+      });
+
+      if (!api) resolve('');
+    });
+  }
+
   async function promptAndUnlockPersonalMode() {
-    const input = window.prompt('请输入个人模式密码（Personal Mode Key）');
-    const key = String(input || '').trim();
+    const key = String(await showPersonalKeyDialog() || '').trim();
     if (!key) return false;
 
     try {
@@ -559,7 +701,7 @@
     del.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const ok = window.confirm(`确认删除缓存文件？\n${name}`);
+      const ok = await showConfirmDialog(`确认删除缓存文件？\n${name}`, { title: '删除缓存文件', okText: '删除' });
       if (!ok) return;
       await deleteCacheItem(item, del);
     });
