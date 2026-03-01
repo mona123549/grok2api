@@ -75,23 +75,30 @@ html[data-theme='dark'] {
   justify-content: center;
 }
 
+/* Stage video: replace stage content (NOT an overlay layer) */
 .media-detail-stage-video {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  inset: auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 18px;
-  /* Lighter overlay so stage feels like a centered "theater window" (not a big black layer) */
-  background: rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(6px);
+
+  /* Maximize stage usable area */
+  padding: 0;
+
+  /* No dark layer / blur: keep stage as a single content window */
+  background: transparent;
 }
 
 .media-detail-stage-video video {
-  /* Backward-compatible: even without a frame wrapper, keep a centered theater-like window */
   width: 100%;
   height: 100%;
-  max-width: min(100%, 920px);
+  max-width: 100%;
   max-height: 100%;
   object-fit: contain;
   border-radius: 14px;
@@ -99,11 +106,12 @@ html[data-theme='dark'] {
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.25);
 }
 
-/* Optional: if HTML adds a dedicated frame wrapper (T8/T9), it becomes the visual container */
+/* Stage video frame: use full available stage area (remove 920px cap) */
 .media-detail-stage-video-frame {
-  width: min(100%, 920px);
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
   max-height: 100%;
-  aspect-ratio: var(--md-stage-aspect, 16 / 9);
   border-radius: 14px;
   background: #000;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.25);
@@ -627,14 +635,13 @@ html[data-theme='dark'] .media-detail-video-item {
   transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0.15s;
 }
 
+/* Disable hover/selected actions overlay for video thumbnails (requirement: hover shows nothing) */
 .media-detail-video-item:hover .media-detail-video-item-actions,
 .media-detail-video-item.is-selected .media-detail-video-item-actions {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-  transform: translateY(0);
-
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(4px);
 }
 
 /* Video card favorite button highlight */
@@ -954,14 +961,41 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
 
     scroll-snap-type: y proximity;
 
-    /* Hide scrollbars cross-browser while keeping scroll */
-    scrollbar-width: none; /* Firefox */
-    -ms-overflow-style: none; /* IE/Edge legacy */
+    /* Scrollbar: keep visible (thin) to explicitly control left list scrolling */
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
+  }
+
+  html[data-theme='dark'] .media-detail-video-results {
+    scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
   }
 
   .media-detail-video-results::-webkit-scrollbar {
-    width: 0;
-    height: 0;
+    width: 8px;
+    height: 8px;
+  }
+
+  .media-detail-video-results::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .media-detail-video-results::-webkit-scrollbar-thumb {
+    background-color: rgba(0, 0, 0, 0.26);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  .media-detail-video-results::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(0, 0, 0, 0.36);
+  }
+
+  html[data-theme='dark'] .media-detail-video-results::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.22);
+  }
+
+  html[data-theme='dark'] .media-detail-video-results::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.32);
   }
 
   /* Desktop: actions are an overlay (do not reserve height) */

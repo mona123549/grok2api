@@ -32,7 +32,6 @@
   const detailVideoStatusText = document.getElementById('detailVideoStatusText');
   const detailVideoEmpty = document.getElementById('detailVideoEmpty');
   const detailVideoResults = document.getElementById('detailVideoResults');
-  const detailLeftScrollSensor = document.getElementById('detailLeftScrollSensor');
   const detailVideoClearBtn = document.getElementById('detailVideoClearBtn');
 
   // T6/T7: clear confirm modal
@@ -488,49 +487,6 @@
     });
   }
 
-  function bindLeftScrollSensorWheel() {
-    if (!detailLeftScrollSensor || !detailVideoResults) return;
-
-    const mql = (window.matchMedia && typeof window.matchMedia === 'function')
-      ? window.matchMedia('(min-width: 1101px)')
-      : null;
-
-    const isDesktop = () => {
-      if (mql) return Boolean(mql.matches);
-      return window.innerWidth >= 1101;
-    };
-
-    detailLeftScrollSensor.addEventListener('wheel', (event) => {
-      if (!isDesktop()) return;
-      if (!event) return;
-
-      // Avoid interfering with browser zoom gesture (Ctrl+wheel)
-      if (event.ctrlKey) return;
-
-      const dxRaw = Number(event.deltaX || 0);
-      const dyRaw = Number(event.deltaY || 0);
-
-      // Prefer not hijacking trackpad horizontal scroll
-      if (Math.abs(dxRaw) > Math.abs(dyRaw)) return;
-      if (!dyRaw) return;
-
-      const scale =
-        (event.deltaMode === 1) ? 16 : // lines -> px (best-effort)
-          (event.deltaMode === 2) ? Math.max(120, window.innerHeight) : // pages -> px
-            1;
-
-      const dy = dyRaw * scale;
-
-      const scroller = detailVideoResults;
-      const prev = scroller.scrollTop;
-
-      scroller.scrollTop = prev + dy;
-
-      // Always prevent default to avoid any scroll chaining/overscroll effects.
-      event.preventDefault();
-      event.stopPropagation();
-    }, { passive: false });
-  }
 
   function extractParentPostIdFromText(text) {
     const raw = String(text || '').trim();
@@ -949,6 +905,7 @@
     item.className = 'media-detail-video-item';
     item.dataset.taskId = String(taskId || '').trim();
 
+    // Requirement: video thumbnail cards must be stable and must NOT show hover popovers/actions.
     item.innerHTML = `
       <div class="media-detail-video-item-head">
         <div class="media-detail-video-item-status running">排队中</div>
@@ -958,11 +915,6 @@
           <img class="media-detail-video-thumb-img" alt="" loading="lazy" decoding="async">
           <div class="media-detail-video-thumb-overlay">生成中</div>
         </div>
-      </div>
-      <div class="media-detail-video-item-actions">
-        <a class="geist-button-outline text-xs px-3 hidden" data-role="open" target="_blank" rel="noopener">打开</a>
-        <button class="geist-button-outline text-xs px-3" data-role="download" type="button" disabled>下载</button>
-        <button class="geist-button-outline text-xs px-3" data-role="favorite" type="button" aria-pressed="false" title="收藏入库">收藏</button>
       </div>
     `;
 
@@ -1242,113 +1194,15 @@
 
   function bindDetailVideoDownloads() {
     if (!detailVideoResults) return;
+
+    // Requirement: left video list is for selection + preview only.
+    // No hover popovers, and no per-card download/favorite actions here.
     detailVideoResults.addEventListener('click', async (event) => {
-      const target = event.target;
+      const target = event && event.target ? event.target : null;
       if (!(target instanceof HTMLElement)) return;
 
-      const role = target.getAttribute('data-role');
-
-      if (role === 'download') {
-        const url = String(target.dataset.url || '').trim();
-        if (!url) return;
-
-        try {
-          const resp = await fetch(url, { mode: 'cors' });
-          if (!resp.ok) throw new Error('download_failed');
-          const blob = await resp.blob();
-          const blobUrl = URL.createObjectURL(blob);
-          const anchor = document.createElement('a');
-          anchor.href = blobUrl;
-          anchor.download = `media_detail_video_${Date.now()}.mp4`;
-          document.body.appendChild(anchor);
-          anchor.click();
-          anchor.remove();
-          URL.revokeObjectURL(blobUrl);
-        } catch (e) {
-          toast('下载失败，请检查链接可访问性', 'error');
-        }
-        return;
-      }
-
-      if (role === 'favorite') {
-        const card = target.closest('.media-detail-video-item');
-        if (!card) return;
-
-        const url = String(card.dataset.videoUrl || '').trim();
-        if (!url) {
-          toast('视频尚未生成完成（缺少链接）', 'warning');
-          return;
-        }
-
-        const authHeader = typeof ensurePublicKey === 'function' ? await ensurePublicKey() : null;
-        if (authHeader === null) {
-          toast('请先配置 Public Key', 'error');
-          window.location.href = '/login';
-          return;
-        }
-
-        const currentOn = target.getAttribute('aria-pressed') === 'true';
-        target.disabled = true;
-
-        try {
-          if (!currentOn) {
-            const data = getQueryParams();
-            const rawImageUrl = String(data.imageUrl || '').trim();
-            const { parentPostId, sourceImageUrl } = resolveVideoSource(data, rawImageUrl);
-
-            const derivedFromId = parentPostId ? `img_${parentPostId}` : '';
-            const stableId = `vidu_${hashStringToHex(url)}`;
-
-            const resp = await favoriteVideoLibraryItem(authHeader, {
-              id: stableId,
-              media_type: 'video',
-              prompt: String(detailVideoPromptInput ? detailVideoPromptInput.value : '').trim() || String(data.prompt || '').trim(),
-              parent_post_id: String(parentPostId || '').trim(),
-              source_image_url: String(sourceImageUrl || '').trim(),
-              video_url: url,
-              derived_from_id: derivedFromId,
-              extra: {
-                source: 'media_detail_video',
-              },
-            });
-
-            const savedId = String(resp && resp.id ? resp.id : stableId).trim();
-            if (savedId) {
-              card.dataset.videoLibraryId = savedId;
-              videoFavoriteByUrl.set(url, savedId);
-            }
-
-            setVideoFavoriteUi(card, true);
-            toast('视频已收藏', 'success');
-          } else {
-            const libId = String(card.dataset.videoLibraryId || '').trim() || String(videoFavoriteByUrl.get(url) || '').trim();
-            if (!libId) {
-              toast('缺少 libraryId，无法取消收藏', 'error');
-              return;
-            }
-
-            const ok = await unfavoriteLibraryItemById(libId);
-            if (!ok) {
-              toast('取消收藏失败', 'error');
-              return;
-            }
-
-            videoFavoriteByUrl.delete(url);
-            setVideoFavoriteUi(card, false);
-            toast('已取消收藏', 'info');
-          }
-        } catch (e) {
-          toast('收藏操作失败', 'error');
-        } finally {
-          target.disabled = false;
-        }
-        return;
-      }
-
-      // Select video for stage preview (click anywhere on card except open link)
       const card = target.closest('.media-detail-video-item');
       if (!card) return;
-      if (target.closest && (target.closest('[data-role="open"]') || target.closest('a'))) return;
 
       const url = String(card.dataset.videoUrl || '').trim();
       if (!url) return;
@@ -1359,7 +1213,6 @@
       card.classList.add('is-selected');
 
       // Keep selected item visible in filmstrip scroll container
-      // Desktop: only scroll the left scroller to avoid any ancestor scroll/relayout side effects.
       try {
         if (isDesktopLayout() && detailVideoResults) {
           ensureItemVisibleInScroller(detailVideoResults, card, 12);
@@ -1721,7 +1574,7 @@
       }
     }
 
-    // Restore image main visual when closing stage video preview
+    // Restore image as stage main content (replace mode)
     if (detailImage && String(detailImage.getAttribute('src') || '').trim()) {
       detailImage.classList.add('is-visible');
     }
@@ -1817,7 +1670,10 @@
     // Apply last preference before loading/playing (muted/volume)
     applyStagePlaybackPrefToVideo(stageVideo);
 
-    // Keep image visible behind; stage video is an overlay preview
+    // Replace stage content: hide image, show video
+    if (detailImage) {
+      detailImage.classList.remove('is-visible');
+    }
     stageVideoWrap.hidden = false;
 
     // Reset aspect while loading; will be updated on loadedmetadata.
@@ -2054,7 +1910,6 @@
 
     // T8 bindings (video composer)
     bindDetailVideoAdvancedToggle();
-    bindLeftScrollSensorWheel();
     bindDetailVideoDownloads();
     bindDetailVideoClearButton();
     setVideoButtons(false);
