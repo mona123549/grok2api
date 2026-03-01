@@ -111,6 +111,7 @@ async def _new_session(
     parent_post_id: Optional[str],
     source_image_url: Optional[str],
     reasoning_effort: Optional[str],
+    route_mode: Optional[str],
 ) -> str:
     task_id = uuid.uuid4().hex
     now = time.time()
@@ -126,6 +127,8 @@ async def _new_session(
             "parent_post_id": parent_post_id,
             "source_image_url": source_image_url,
             "reasoning_effort": reasoning_effort,
+            # default: keep compatibility with old sessions
+            "route_mode": (route_mode or "default"),
             "created_at": now,
         }
     return task_id
@@ -202,6 +205,10 @@ class VideoStartRequest(BaseModel):
     preset: Optional[str] = "normal"
     # Upper bound is controlled by config: video.public_max_concurrent
     concurrent: Optional[int] = Field(1, ge=1)
+    # Routing strategy:
+    # - default: use preferred_token (image bound token) when available
+    # - normal: ignore preferred_token and fallback to normal routing
+    route_mode: Optional[str] = "default"
     image_url: Optional[str] = None
     parent_post_id: Optional[str] = None
     source_image_url: Optional[str] = None
@@ -238,6 +245,13 @@ async def public_video_start(data: VideoStartRequest):
         raise HTTPException(
             status_code=400,
             detail="preset must be one of ['fun','normal','spicy','custom']",
+        )
+
+    route_mode = str(data.route_mode or "default").strip().lower()
+    if route_mode not in ("default", "normal"):
+        raise HTTPException(
+            status_code=400,
+            detail="route_mode must be one of ['default','normal']",
         )
 
     concurrent = int(data.concurrent or 1)
@@ -306,6 +320,7 @@ async def public_video_start(data: VideoStartRequest):
             parent_post_id,
             source_image_url,
             reasoning_effort,
+            route_mode,
         )
         task_ids.append(task_id)
 
@@ -315,6 +330,7 @@ async def public_video_start(data: VideoStartRequest):
         "concurrent": concurrent,
         "aspect_ratio": aspect_ratio,
         "parent_post_id": parent_post_id,
+        "route_mode": route_mode,
     }
 
 
@@ -335,11 +351,18 @@ async def public_video_sse(request: Request, task_id: str = Query("")):
     if parent_post_id:
         source_image_url = _build_imagine_public_url(parent_post_id)
     reasoning_effort = session.get("reasoning_effort")
+    route_mode = str(session.get("route_mode") or "default").strip().lower()
 
     async def event_stream():
         try:
             preferred_token = None
-            if parent_post_id:
+
+            if route_mode == "normal":
+                logger.info(
+                    "Public video routing mode: normal (ignore preferred_token)"
+                    f", parent_post_id={parent_post_id or '-'}"
+                )
+            elif parent_post_id:
                 try:
                     preferred_token = await imagine_public_api._get_bound_image_token(
                         parent_post_id

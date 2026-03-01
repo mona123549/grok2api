@@ -34,6 +34,7 @@
   const detailVideoResults = document.getElementById('detailVideoResults');
   const detailVideoScrollbar = document.getElementById('detailVideoScrollbar');
   const detailVideoScrollbarThumb = detailVideoScrollbar ? detailVideoScrollbar.querySelector('.md-video-scrollbar-thumb') : null;
+  const detailVideoAppendScheme8Btn = document.getElementById('detailVideoAppendScheme8Btn');
   const detailVideoClearBtn = document.getElementById('detailVideoClearBtn');
 
   // T6/T7: clear confirm modal
@@ -54,7 +55,7 @@
   const STAGE_PLAYBACK_PREF_KEY = 'media_detail_stage_playback_pref_v1';
 
   // Build tag (for verifying frontend update on server)
-  const BUILD_TAG = '0019b';
+  const BUILD_TAG = '0020a';
 
   const DESKTOP_MQL = (window.matchMedia && typeof window.matchMedia === 'function')
     ? window.matchMedia('(min-width: 1101px)')
@@ -1342,6 +1343,12 @@
       job.source = null;
     }
 
+    // Remove from active task list (supports "append while running").
+    const tid = String(taskId || '').trim();
+    if (tid) {
+      videoState.taskIds = videoState.taskIds.filter((id) => String(id || '').trim() !== tid);
+    }
+
     // Machine-readable error marker for filtering (avoid relying on Chinese text).
     const errorType = options && options.errorType ? String(options.errorType || '').trim() : '';
     if (errorType) {
@@ -1362,10 +1369,11 @@
       setVideoItemStatus(job.item, '完成', 'done');
     }
 
-    // Re-apply filters so newly-marked "conn error" cards can be hidden immediately.
+    // Re-apply filters so newly-marked cards can be hidden immediately.
     applyVideoFilters();
 
-    const allDone = Array.from(videoState.jobs.values()).every((it) => it.done);
+    // Running state is based on "active tasks" (supports append while running).
+    const allDone = videoState.taskIds.length === 0;
     if (allDone) {
       videoState.running = false;
       setVideoButtons(false);
@@ -1435,7 +1443,20 @@
       }
 
       if (payload && payload.error) {
-        completeVideoJob(taskId, { error: '失败' });
+        // Best-effort moderation hint (string fallback). Prefer structured codes later.
+        const rawErr = String(payload.error || '').toLowerCase();
+        const isModeration =
+          rawErr.includes('moderation')
+          || rawErr.includes('moderated')
+          || rawErr.includes('blocked by moderation')
+          || rawErr.includes('blocked');
+
+        if (isModeration) {
+          completeVideoJob(taskId, { error: '审核拦截', errorType: 'moderation' });
+          toast('疑似审核拦截：继续用相同输入重试意义不大，可尝试修改 Prompt 或使用“追加视频（方案8）”', 'warning');
+        } else {
+          completeVideoJob(taskId, { error: '失败' });
+        }
         return;
       }
 
@@ -1605,6 +1626,108 @@
     if (!silent) {
       toast('视频任务已中断', 'warning');
     }
+  }
+
+  async function appendDetailVideoScheme8(data, rawImageUrl) {
+    const { parentPostId, sourceImageUrl } = resolveVideoSource(data, rawImageUrl);
+    if (!parentPostId) {
+      toast('缺少 parentPostId（image_id），无法生成视频', 'error');
+      return;
+    }
+
+    const authHeader = typeof ensurePublicKey === 'function' ? await ensurePublicKey() : null;
+    if (authHeader === null) {
+      toast('请先配置 Public Key', 'error');
+      window.location.href = '/login';
+      return;
+    }
+
+    videoState.authHeader = authHeader;
+    videoState.rawPublicKey = normalizeAuthHeader(authHeader);
+
+    // Preload favorites (best-effort)
+    preloadVideoFavoriteIndex(authHeader);
+
+    const rawParallel = parseInt(String(detailVideoParallelSelect ? detailVideoParallelSelect.value : '1'), 10);
+    const requestedParallel = Number.isFinite(rawParallel) ? rawParallel : 1;
+
+    const maxParallelFromAttr = parseInt(String(detailVideoParallelSelect && detailVideoParallelSelect.getAttribute ? (detailVideoParallelSelect.getAttribute('max') || '') : ''), 10);
+    const maxParallel = (Number.isFinite(maxParallelFromAttr) && maxParallelFromAttr > 0) ? maxParallelFromAttr : 8;
+
+    const parallel = Math.max(1, Math.min(maxParallel, requestedParallel || 1));
+
+    // Keep UI value consistent after clamping (best-effort)
+    if (detailVideoParallelSelect) {
+      try {
+        detailVideoParallelSelect.value = String(parallel);
+      } catch (e) {
+        // ignore
+      }
+    }
+    saveVideoParallelPref(parallel);
+
+    const prompt = String(detailVideoPromptInput ? detailVideoPromptInput.value : '').trim();
+
+    const payload = {
+      prompt,
+      aspect_ratio: detailVideoRatioSelect ? detailVideoRatioSelect.value : '16:9',
+      video_length: parseInt(String(detailVideoLengthSelect ? detailVideoLengthSelect.value : '6'), 10) || 6,
+      resolution_name: detailVideoResolutionSelect ? detailVideoResolutionSelect.value : '480p',
+      preset: detailVideoPresetSelect ? detailVideoPresetSelect.value : (prompt ? 'custom' : 'spicy'),
+      parent_post_id: parentPostId,
+      source_image_url: sourceImageUrl || buildImaginePublicUrl(parentPostId),
+      // Scheme8: ignore preferred_token on backend
+      route_mode: 'normal',
+    };
+
+    let taskIds = [];
+    try {
+      const resp = await createVideoTask(authHeader, { ...payload, concurrent: parallel });
+      const list = (resp && Array.isArray(resp.task_ids)) ? resp.task_ids : [];
+      const single = String(resp && resp.task_id ? resp.task_id : '').trim();
+
+      taskIds = (list && list.length ? list : (single ? [single] : []))
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
+    } catch (e) {
+      taskIds = [];
+    }
+
+    if (!taskIds.length) {
+      toast('追加失败：视频任务创建失败', 'error');
+      return;
+    }
+
+    if (detailVideoEmpty) detailVideoEmpty.classList.add('hidden');
+
+    // Mark running and show Stop button; keep existing results (append).
+    videoState.running = true;
+    setVideoButtons(true);
+    setVideoStatus('运行中');
+
+    // Merge active task ids
+    for (const id of taskIds) {
+      if (!videoState.taskIds.includes(id)) {
+        videoState.taskIds.push(id);
+      }
+    }
+
+    taskIds.forEach((taskId, idx) => {
+      const card = createVideoCard(idx + 1, taskId, detailVideoResults, currentVideoThumbUrl);
+      if (!card) return;
+      videoState.jobs.set(taskId, {
+        taskId,
+        item: card,
+        source: null,
+        buffer: '',
+        progressBuffer: '',
+        collecting: false,
+        done: false,
+      });
+      openVideoStream(taskId, card);
+    });
+
+    toast(`已追加 ${taskIds.length} 个任务（方案8）`, 'info');
   }
 
   function bindDetailVideoDownloads() {
@@ -2431,6 +2554,14 @@
         startDetailVideo(data, finalImageUrl);
       });
     }
+
+    if (detailVideoAppendScheme8Btn) {
+      detailVideoAppendScheme8Btn.addEventListener('click', () => {
+        // Allow append while running (scheme8 / normal routing).
+        appendDetailVideoScheme8(data, finalImageUrl);
+      });
+    }
+
     if (detailVideoStopBtn) {
       detailVideoStopBtn.addEventListener('click', () => {
         stopDetailVideo(false);
