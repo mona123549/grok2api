@@ -54,7 +54,7 @@
   const STAGE_PLAYBACK_PREF_KEY = 'media_detail_stage_playback_pref_v1';
 
   // Build tag (for verifying frontend update on server)
-  const BUILD_TAG = '0018';
+  const BUILD_TAG = '0018b';
 
   const DESKTOP_MQL = (window.matchMedia && typeof window.matchMedia === 'function')
     ? window.matchMedia('(min-width: 1101px)')

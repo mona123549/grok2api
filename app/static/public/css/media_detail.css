@@ -946,6 +946,10 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
     display: flex;
     flex-direction: column;
 
+    /* Fill the whole left column height */
+    flex: 1;
+    min-height: 0;
+
     /* Reserve visual space for the always-visible custom scrollbar (T11) */
     padding-left: 22px;
   }
@@ -982,6 +986,15 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
   /* T11: always-visible custom scrollbar on the LEFT edge of the video column */
   .media-detail-video-column {
     position: relative;
+
+    /* Make left column fill full grid height (match the red box expectation) */
+    height: 100%;
+    min-height: 0;
+
+    /* Allow its only child surface to stretch to full height */
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .md-video-scrollbar {
