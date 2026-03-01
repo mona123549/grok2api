@@ -109,9 +109,12 @@ html[data-theme='dark'] {
 /* Stage video frame: use full available stage area (remove 920px cap) */
 .media-detail-stage-video-frame {
   width: 100%;
-  height: 100%;
   max-width: 100%;
   max-height: 100%;
+
+  /* Keep a stable "window" shape, avoid the full-height black board feeling */
+  aspect-ratio: var(--md-stage-aspect, 16 / 9);
+
   border-radius: 14px;
   background: #000;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.25);
@@ -947,7 +950,11 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
   .media-detail-video-results {
     flex: 1;
     min-height: 0; /* critical for flex overflow scrolling */
-    overflow: auto;
+
+    /* Always show a (thin) scrollbar and keep it on the LEFT edge */
+    overflow-y: scroll;
+    overflow-x: hidden;
+    direction: rtl;
 
     /* Stabilize scrollbar reservation to avoid layout width "jumps" */
     scrollbar-gutter: stable;
@@ -964,6 +971,11 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
     /* Scrollbar: keep visible (thin) to explicitly control left list scrolling */
     scrollbar-width: thin; /* Firefox */
     scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
+  }
+
+  /* Restore normal text/layout direction for list items (only move the scrollbar to the left) */
+  .media-detail-video-results > * {
+    direction: ltr;
   }
 
   html[data-theme='dark'] .media-detail-video-results {
