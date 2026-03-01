@@ -39,6 +39,10 @@ const LOCALE_MAP = {
     "app_key": { title: "后台密码", desc: "登录 Grok2API 管理后台的密码（必填）。" },
     "public_enabled": { title: "启用功能玩法", desc: "是否启用功能玩法入口（关闭则功能玩法页面不可访问）。" },
     "public_key": { title: "Public 密码", desc: "功能玩法页面的访问密码（可选）。" },
+
+    "personal_mode_enabled": { title: "启用个人模式", desc: "开启后可在 Media 历史库页面解锁缓存（tmp）管理能力（需个人模式密码）。" },
+    "personal_mode_key": { title: "个人模式密码", desc: "用于解锁个人模式缓存管理能力的密码（建议启用个人模式时必填）。" },
+
     "app_url": { title: "应用地址", desc: "当前 Grok2API 服务的外部访问 URL，用于文件链接访问。" },
     "image_format": { title: "图片格式", desc: "默认生成的图片格式（url 或 base64）。" },
     "video_format": { title: "视频格式", desc: "默认生成的视频格式（html 或 url，url 为处理后的链接）。" },
@@ -418,7 +422,7 @@ function buildFieldCard(section, key, val) {
     built = buildJsonInput(section, key, val);
   }
   else {
-    if (key === 'api_key' || key === 'app_key' || key === 'public_key') {
+    if (key === 'api_key' || key === 'app_key' || key === 'public_key' || key === 'personal_mode_key') {
       built = buildSecretInput(section, key, val);
     } else {
       built = buildTextInput(section, key, val);
@@ -482,6 +486,17 @@ async function saveConfig() {
       if (!newConfig[s]) newConfig[s] = {};
       newConfig[s][k] = val;
     });
+
+    // Personal Mode validation
+    try {
+      const enabled = Boolean(newConfig?.app?.personal_mode_enabled);
+      const key = String(newConfig?.app?.personal_mode_key || '').trim();
+      if (enabled && !key) {
+        throw new Error('已启用个人模式，但“个人模式密码”为空');
+      }
+    } catch (e) {
+      throw e;
+    }
 
     const res = await fetch('/v1/admin/config', {
       method: 'POST',

@@ -1,10 +1,12 @@
 const APP_KEY_STORAGE = 'grok2api_app_key';
 const PUBLIC_KEY_STORAGE = 'grok2api_public_key';
+const PERSONAL_KEY_STORAGE = 'grok2api_personal_key';
 const APP_KEY_ENC_PREFIX = 'enc:v1:';
 const APP_KEY_XOR_PREFIX = 'enc:xor:';
 const APP_KEY_SECRET = 'grok2api-admin-key';
 let cachedAdminKey = null;
 let cachedPublicKey = null;
+let cachedPersonalKey = null;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -125,6 +127,17 @@ async function getStoredPublicKey() {
   }
 }
 
+async function getStoredPersonalKey() {
+  const stored = localStorage.getItem(PERSONAL_KEY_STORAGE) || '';
+  if (!stored) return '';
+  try {
+    return await decryptAppKey(stored);
+  } catch (e) {
+    clearStoredPersonalKey();
+    return '';
+  }
+}
+
 async function storeAppKey(appKey) {
   if (!appKey) {
     clearStoredAppKey();
@@ -143,6 +156,15 @@ async function storePublicKey(publicKey) {
   localStorage.setItem(PUBLIC_KEY_STORAGE, encrypted || '');
 }
 
+async function storePersonalKey(personalKey) {
+  if (!personalKey) {
+    clearStoredPersonalKey();
+    return;
+  }
+  const encrypted = await encryptAppKey(personalKey);
+  localStorage.setItem(PERSONAL_KEY_STORAGE, encrypted || '');
+}
+
 function clearStoredAppKey() {
   localStorage.removeItem(APP_KEY_STORAGE);
   cachedAdminKey = null;
@@ -151,6 +173,11 @@ function clearStoredAppKey() {
 function clearStoredPublicKey() {
   localStorage.removeItem(PUBLIC_KEY_STORAGE);
   cachedPublicKey = null;
+}
+
+function clearStoredPersonalKey() {
+  localStorage.removeItem(PERSONAL_KEY_STORAGE);
+  cachedPersonalKey = null;
 }
 
 async function verifyKey(url, key) {
@@ -217,11 +244,13 @@ function buildAuthHeaders(apiKey) {
 function logout() {
   clearStoredAppKey();
   clearStoredPublicKey();
+  clearStoredPersonalKey();
   window.location.href = '/admin/login';
 }
 
 function publicLogout() {
   clearStoredPublicKey();
+  clearStoredPersonalKey();
   window.location.href = '/login';
 }
 

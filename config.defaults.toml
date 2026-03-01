@@ -10,6 +10,12 @@ api_key = ""
 public_enabled = false
 # Public 调用密钥（可选）
 public_key = ""
+
+# 是否启用个人模式（Personal Mode）
+personal_mode_enabled = false
+# 个人模式密码（建议启用 personal_mode_enabled 时必填）
+personal_mode_key = ""
+
 # 生成图片的格式（url 或 base64）
 image_format = "url"
 # 生成视频的格式（html 或 url）

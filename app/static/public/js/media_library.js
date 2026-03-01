@@ -24,6 +24,13 @@
     authHeader: '',
     rawPublicKey: '',
     hasMore: true,
+
+    // data source
+    dataSource: 'library', // library|cache
+
+    // personal mode
+    personalUnlocked: false,
+    personalKey: '',
   };
 
   function toast(message, type) {
@@ -163,6 +170,12 @@
     return state.authHeader;
   }
 
+  function buildPersonalHeaders() {
+    const key = String(state.personalKey || '').trim();
+    if (!key) return {};
+    return { 'X-Personal-Key': key };
+  }
+
   async function apiFetchJson(url, options) {
     const authHeader = await ensureAuth();
     if (authHeader === null) return null;
@@ -181,6 +194,88 @@
     }
 
     return await res.json();
+  }
+
+  async function apiFetchJsonPersonal(url, options) {
+    const authHeader = await ensureAuth();
+    if (authHeader === null) return null;
+
+    const res = await fetch(url, {
+      ...(options || {}),
+      headers: {
+        ...(typeof buildAuthHeaders === 'function' ? buildAuthHeaders(authHeader) : {}),
+        ...buildPersonalHeaders(),
+        ...((options && options.headers) ? options.headers : {}),
+      },
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || 'request_failed');
+    }
+
+    return await res.json();
+  }
+
+  async function verifyPersonalModeKey(key) {
+    state.personalKey = String(key || '').trim();
+    const resp = await apiFetchJsonPersonal('/v1/public/personal/verify', { method: 'GET' });
+    return Boolean(resp && resp.status === 'success');
+  }
+
+  async function tryAutoUnlockPersonalMode() {
+    if (state.personalUnlocked) return true;
+    if (typeof getStoredPersonalKey !== 'function') return false;
+
+    const stored = await getStoredPersonalKey();
+    const key = String(stored || '').trim();
+    if (!key) return false;
+
+    try {
+      const ok = await verifyPersonalModeKey(key);
+      if (ok) {
+        state.personalUnlocked = true;
+        return true;
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    if (typeof clearStoredPersonalKey === 'function') {
+      clearStoredPersonalKey();
+    }
+    state.personalKey = '';
+    state.personalUnlocked = false;
+    return false;
+  }
+
+  async function promptAndUnlockPersonalMode() {
+    const input = window.prompt('请输入个人模式密码（Personal Mode Key）');
+    const key = String(input || '').trim();
+    if (!key) return false;
+
+    try {
+      const ok = await verifyPersonalModeKey(key);
+      if (!ok) {
+        toast('个人模式密码无效', 'error');
+        return false;
+      }
+      state.personalUnlocked = true;
+      if (typeof storePersonalKey === 'function') {
+        await storePersonalKey(key);
+      }
+      toast('个人模式已解锁', 'success');
+      return true;
+    } catch (e) {
+      const msg = String(e && e.message ? e.message : '');
+      // 后端在 personal_mode_enabled=false 时会返回 404
+      if (msg.includes('Not found') || msg.includes('404')) {
+        toast('个人模式未启用（请在配置管理中开启）', 'info');
+      } else {
+        toast('个人模式解锁失败', 'error');
+      }
+      return false;
+    }
   }
 
   function createCard(item) {
@@ -339,6 +434,150 @@
     return card;
   }
 
+  async function deleteCacheItem(item, btn) {
+    if (!item || typeof item !== 'object') return;
+    const name = String(item.name || '').trim();
+    const mediaType = String(item.media_type || '').trim();
+    if (!name || !mediaType) return;
+
+    if (btn) btn.disabled = true;
+
+    try {
+      const resp = await apiFetchJsonPersonal('/v1/public/personal/cache/item/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: mediaType, name }),
+      });
+
+      const ok = Boolean(resp && resp.result && resp.result.deleted);
+      if (!ok) {
+        toast('删除失败', 'error');
+        return;
+      }
+
+      const card = btn ? btn.closest('.mlib-card') : null;
+      if (card) {
+        card.remove();
+      }
+      state.shown = Math.max(0, state.shown - 1);
+      state.total = Math.max(0, state.total - 1);
+      setCounts(state.total, state.shown);
+      renderEmptyIfNeeded();
+      toast('已删除', 'success');
+    } catch (e) {
+      toast('删除失败', 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function createCacheCard(item) {
+    const mediaType = String(item && item.media_type ? item.media_type : '').trim() || '-';
+    const createdAt = formatTime(item && item.mtime_ms ? item.mtime_ms : 0);
+    const name = String(item && item.name ? item.name : '').trim();
+    const url = String(item && item.view_url ? item.view_url : '').trim();
+
+    const card = document.createElement('div');
+    card.className = 'mlib-card';
+    card.dataset.id = `cache:${mediaType}:${name}`;
+    card.dataset.mediaType = mediaType;
+
+    // cache card: no favorite button
+    if (mediaType === 'video') {
+      const video = document.createElement('video');
+      video.className = 'mlib-thumb';
+      video.muted = true;
+      video.playsInline = true;
+      video.setAttribute('playsinline', '');
+      video.setAttribute('webkit-playsinline', '');
+      video.preload = 'metadata';
+      if (url) {
+        const source = document.createElement('source');
+        source.src = url;
+        source.type = 'video/mp4';
+        video.appendChild(source);
+      }
+      card.appendChild(video);
+    } else {
+      const img = document.createElement('img');
+      img.className = 'mlib-thumb';
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.alt = name || 'cache';
+      img.src = url;
+      card.appendChild(img);
+    }
+
+    const meta = document.createElement('div');
+    meta.className = 'mlib-card-meta';
+
+    const title = document.createElement('div');
+    title.className = 'mlib-card-title';
+
+    const left = document.createElement('div');
+    left.textContent = mediaType === 'video' ? '缓存视频' : '缓存图片';
+
+    const tag = document.createElement('span');
+    tag.className = 'mlib-tag';
+    tag.textContent = createdAt;
+
+    title.appendChild(left);
+    title.appendChild(tag);
+
+    const sub = document.createElement('div');
+    sub.className = 'mlib-card-sub';
+    sub.textContent = name ? name : '（无文件名）';
+
+    const actions = document.createElement('div');
+    actions.className = 'mlib-card-actions';
+
+    if (mediaType === 'video') {
+      const open = document.createElement('a');
+      open.className = 'geist-button-outline mlib-mini-btn';
+      open.target = '_blank';
+      open.rel = 'noopener';
+      open.textContent = '打开视频';
+      if (url) open.href = url;
+      else open.href = '#';
+      actions.appendChild(open);
+    } else {
+      const open = document.createElement('a');
+      open.className = 'geist-button-outline mlib-mini-btn';
+      open.target = '_blank';
+      open.rel = 'noopener';
+      open.textContent = '打开图片';
+      if (url) open.href = url;
+      else open.href = '#';
+      actions.appendChild(open);
+    }
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'geist-button mlib-mini-btn';
+    del.textContent = '删除';
+    del.title = '从缓存目录删除该文件';
+    del.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ok = window.confirm(`确认删除缓存文件？\n${name}`);
+      if (!ok) return;
+      await deleteCacheItem(item, del);
+    });
+    actions.appendChild(del);
+
+    meta.appendChild(title);
+    meta.appendChild(sub);
+    meta.appendChild(actions);
+    card.appendChild(meta);
+
+    return card;
+  }
+
+  function createCardBySource(item) {
+    if (state.dataSource === 'cache') return createCacheCard(item);
+    return createCard(item);
+  }
+
   function renderItems(items, append) {
     if (!grid) return;
     if (!append) {
@@ -349,7 +588,7 @@
     const list = Array.isArray(items) ? items : [];
     for (const it of list) {
       if (!it || typeof it !== 'object') continue;
-      const card = createCard(it);
+      const card = createCardBySource(it);
       grid.appendChild(card);
       state.shown += 1;
     }
@@ -376,6 +615,42 @@
     try {
       const { mediaType, favoriteOnly, q } = getFilters();
 
+      if (state.dataSource === 'cache') {
+        // cache: require personal unlock
+        if (!state.personalUnlocked) {
+          const ok = await tryAutoUnlockPersonalMode();
+          if (!ok) {
+            toast('请先解锁个人模式', 'info');
+            setStatus('需要解锁个人模式', 'error');
+            return;
+          }
+        }
+
+        const params = new URLSearchParams();
+        params.set('page', String(page));
+        params.set('page_size', String(state.pageSize));
+        // cache API uses type=image|video|all
+        params.set('type', mediaType ? mediaType : 'all');
+
+        const data = await apiFetchJsonPersonal(`/v1/public/personal/cache/list?${params.toString()}`, {
+          method: 'GET',
+        });
+        if (!data) return;
+
+        const items = Array.isArray(data.items) ? data.items : [];
+        const total = Number(data.total || 0);
+        state.total = Number.isFinite(total) ? total : items.length;
+
+        const loaded = items.length;
+        state.page = page;
+        state.hasMore = (state.shown + loaded) < state.total && loaded > 0;
+
+        renderItems(items, append);
+        setStatus('已加载缓存', 'connected');
+        return;
+      }
+
+      // library
       const params = new URLSearchParams();
       params.set('page', String(page));
       params.set('page_size', String(state.pageSize));
@@ -535,6 +810,8 @@
     }
     if (favoriteOnlyToggle) {
       favoriteOnlyToggle.addEventListener('change', () => {
+        // cache 源不支持收藏筛选，直接忽略
+        if (state.dataSource === 'cache') return;
         state.page = 1;
         state.total = 0;
         state.shown = 0;
@@ -550,8 +827,76 @@
     }
   }
 
+  function installPersonalModeControls() {
+    const host = document.querySelector('.mlib-actions') || document.querySelector('.mlib-toolbar-right');
+    if (!host) return;
+
+    const unlockBtn = document.createElement('button');
+    unlockBtn.type = 'button';
+    unlockBtn.className = 'geist-button-outline mlib-btn';
+    unlockBtn.textContent = '个人模式';
+    unlockBtn.title = '解锁个人模式（用于管理缓存）';
+
+    const sourceSelect = document.createElement('select');
+    sourceSelect.className = 'geist-input mlib-input';
+    sourceSelect.title = '数据源';
+    sourceSelect.style.display = 'none';
+    sourceSelect.innerHTML = `
+      <option value="library">历史库</option>
+      <option value="cache">缓存</option>
+    `;
+
+    sourceSelect.addEventListener('change', async () => {
+      const v = String(sourceSelect.value || '').trim();
+      if (v === 'cache') {
+        if (!state.personalUnlocked) {
+          const ok = await promptAndUnlockPersonalMode();
+          if (!ok) {
+            sourceSelect.value = 'library';
+            return;
+          }
+        }
+      }
+      state.dataSource = v === 'cache' ? 'cache' : 'library';
+
+      // cache 源下禁用“仅收藏”筛选
+      if (favoriteOnlyToggle) {
+        favoriteOnlyToggle.disabled = (state.dataSource === 'cache');
+      }
+
+      state.page = 1;
+      state.total = 0;
+      state.shown = 0;
+      state.hasMore = true;
+      loadPage(1, false);
+    });
+
+    unlockBtn.addEventListener('click', async () => {
+      const ok = await promptAndUnlockPersonalMode();
+      if (!ok) return;
+
+      // 解锁后显示数据源切换
+      sourceSelect.style.display = '';
+      // 默认切到缓存
+      sourceSelect.value = 'cache';
+      sourceSelect.dispatchEvent(new Event('change'));
+    });
+
+    host.appendChild(unlockBtn);
+    host.appendChild(sourceSelect);
+
+    // 自动解锁（如果本地已保存 personal key）
+    (async () => {
+      const ok = await tryAutoUnlockPersonalMode();
+      if (ok) {
+        sourceSelect.style.display = '';
+      }
+    })();
+  }
+
   async function init() {
     bindEvents();
+    installPersonalModeControls();
     setCounts(0, 0);
     renderEmptyIfNeeded();
 

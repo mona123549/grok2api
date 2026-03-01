@@ -3,7 +3,7 @@ API 认证模块
 """
 
 from typing import Optional
-from fastapi import HTTPException, status, Security
+from fastapi import HTTPException, status, Security, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import get_config
@@ -12,6 +12,9 @@ DEFAULT_API_KEY = ""
 DEFAULT_APP_KEY = "grok2api"
 DEFAULT_PUBLIC_KEY = ""
 DEFAULT_PUBLIC_ENABLED = False
+
+DEFAULT_PERSONAL_MODE_ENABLED = False
+DEFAULT_PERSONAL_MODE_KEY = ""
 
 # 定义 Bearer Scheme
 security = HTTPBearer(
@@ -46,11 +49,27 @@ def get_public_api_key() -> str:
     public_key = get_config("app.public_key", DEFAULT_PUBLIC_KEY)
     return public_key or ""
 
+
 def is_public_enabled() -> bool:
     """
     是否开启 public 功能入口。
     """
     return bool(get_config("app.public_enabled", DEFAULT_PUBLIC_ENABLED))
+
+
+def is_personal_mode_enabled() -> bool:
+    """
+    是否开启 Personal Mode（个人模式）。
+    """
+    return bool(get_config("app.personal_mode_enabled", DEFAULT_PERSONAL_MODE_ENABLED))
+
+
+def get_personal_mode_key() -> str:
+    """
+    获取 Personal Mode Key（个人模式密码）。
+    """
+    key = get_config("app.personal_mode_key", DEFAULT_PERSONAL_MODE_KEY)
+    return key or ""
 
 
 async def verify_api_key(
@@ -151,3 +170,38 @@ async def verify_public_key(
         )
 
     return auth.credentials
+
+
+async def verify_personal_key(
+    x_personal_key: Optional[str] = Header(default=None, alias="X-Personal-Key"),
+) -> Optional[str]:
+    """
+    验证 Personal Mode Key（个人模式密码）。
+
+    - 使用请求头：X-Personal-Key: <key>
+    - 当 personal_mode_enabled=false 时，默认返回 404（减少探测面）。
+    """
+    if not is_personal_mode_enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    expected = get_personal_mode_key()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Personal mode key is not configured",
+        )
+
+    provided = str(x_personal_key or "").strip()
+    if not provided:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing personal mode key",
+        )
+
+    if provided != expected:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid personal mode key",
+        )
+
+    return provided
