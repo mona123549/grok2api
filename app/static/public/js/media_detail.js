@@ -51,6 +51,9 @@
   // Media detail stage video playback preference (muted/volume)
   const STAGE_PLAYBACK_PREF_KEY = 'media_detail_stage_playback_pref_v1';
 
+  // Build tag (for verifying frontend update on server)
+  const BUILD_TAG = '0018';
+
   const DESKTOP_MQL = (window.matchMedia && typeof window.matchMedia === 'function')
     ? window.matchMedia('(min-width: 1101px)')
     : null;
@@ -355,6 +358,35 @@
   function setVideoStatus(text) {
     if (!detailVideoStatusText) return;
     detailVideoStatusText.textContent = String(text || '').trim() || '未开始';
+  }
+
+  function ensureBuildTagVisible() {
+    if (!detailVideoStatusText) return;
+
+    const meta = detailVideoStatusText.parentElement;
+    if (!meta) return;
+
+    // Avoid duplicates (in case init runs again via BFCache)
+    if (meta.querySelector('[data-role="build-tag"]')) return;
+
+    const tag = document.createElement('span');
+    tag.setAttribute('data-role', 'build-tag');
+    tag.textContent = BUILD_TAG;
+
+    // Inline styles: keep this self-contained so it's obvious even if CSS is cached elsewhere.
+    tag.style.marginLeft = '8px';
+    tag.style.padding = '2px 8px';
+    tag.style.borderRadius = '999px';
+    tag.style.border = '1px solid var(--border)';
+    tag.style.background = 'var(--md-surface)';
+    tag.style.color = 'var(--accents-4)';
+    tag.style.fontSize = '11px';
+    tag.style.fontWeight = '700';
+    tag.style.fontFamily = "'Geist Mono', ui-monospace, monospace";
+    tag.style.lineHeight = '1.4';
+    tag.title = `build ${BUILD_TAG}`;
+
+    meta.appendChild(tag);
   }
 
   function setVideoButtons(running) {
@@ -1914,6 +1946,7 @@
     bindDetailVideoClearButton();
     setVideoButtons(false);
     setVideoStatus('未开始');
+    ensureBuildTagVisible();
 
     // T10: click backdrop to close stage video preview
     if (stageVideoWrap) {
