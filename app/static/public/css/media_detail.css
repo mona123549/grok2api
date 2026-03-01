@@ -808,6 +808,36 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
   margin-top: 10px;
 }
 
+.md-video-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--md-border);
+  background: var(--md-surface-muted);
+  font-size: 12px;
+  color: var(--accents-7);
+  user-select: none;
+}
+
+html[data-theme='dark'] .md-video-filter-row {
+  background: rgba(26, 35, 48, 0.7);
+}
+
+.md-video-filter-row input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+}
+
+.md-video-filter-row label {
+  cursor: pointer;
+}
+
+.media-detail-video-item.is-hidden-by-filter {
+  display: none !important;
+}
+
 .media-detail-video-advanced-actions button {
   width: 100%;
 }

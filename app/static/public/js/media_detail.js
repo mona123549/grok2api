@@ -54,7 +54,7 @@
   const STAGE_PLAYBACK_PREF_KEY = 'media_detail_stage_playback_pref_v1';
 
   // Build tag (for verifying frontend update on server)
-  const BUILD_TAG = '0018b';
+  const BUILD_TAG = '0019b';
 
   const DESKTOP_MQL = (window.matchMedia && typeof window.matchMedia === 'function')
     ? window.matchMedia('(min-width: 1101px)')
@@ -96,6 +96,118 @@
     taskIds: [],
     jobs: new Map(), // taskId -> { item, source, buffer, progressBuffer, collecting, done }
   };
+
+  // --- Video list filters (detail page) ---
+  const VIDEO_HIDE_CONN_ERRORS_KEY = 'media_detail_hide_video_conn_errors_v1';
+
+  const videoFilterState = {
+    hideConnErrors: false,
+  };
+
+  function loadHideConnErrorsPref() {
+    try {
+      const raw = localStorage.getItem(VIDEO_HIDE_CONN_ERRORS_KEY);
+      if (raw === '1') return true;
+      if (raw === '0') return false;
+    } catch (e) {
+      // ignore
+    }
+    return false;
+  }
+
+  function saveHideConnErrorsPref(on) {
+    try {
+      localStorage.setItem(VIDEO_HIDE_CONN_ERRORS_KEY, on ? '1' : '0');
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // --- Video advanced settings persistence (detail page) ---
+  const VIDEO_PARALLEL_PREF_KEY = 'media_detail_video_parallel_v1';
+
+  function loadVideoParallelPref() {
+    // 1) Dedicated key
+    try {
+      const raw = localStorage.getItem(VIDEO_PARALLEL_PREF_KEY);
+      const n = parseInt(String(raw || ''), 10);
+      if (Number.isFinite(n)) return n;
+    } catch (e) {
+      // ignore
+    }
+
+    // 2) Fallback to shared settings blob
+    try {
+      const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+      const parsed = raw ? safeParseJson(raw) : null;
+      if (parsed && typeof parsed.detail_video_parallel !== 'undefined') {
+        const n = parseInt(String(parsed.detail_video_parallel || ''), 10);
+        if (Number.isFinite(n)) return n;
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    return null;
+  }
+
+  function saveVideoParallelPref(value) {
+    const n = parseInt(String(value || ''), 10);
+    if (!Number.isFinite(n)) return;
+
+    try {
+      localStorage.setItem(VIDEO_PARALLEL_PREF_KEY, String(n));
+    } catch (e) {
+      // ignore
+    }
+
+    // Mirror into media_settings_v1 (best-effort) for future cross-page reuse
+    try {
+      const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+      const parsed = raw ? safeParseJson(raw) : null;
+      const next = (parsed && typeof parsed === 'object') ? { ...parsed } : { v: 1 };
+      next.detail_video_parallel = n;
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function isConnErrorVideoCard(card) {
+    if (!card) return false;
+
+    // Preferred: machine-readable marker set by completeVideoJob()
+    const t = String(card.dataset.videoErrorType || '').trim();
+    if (t === 'conn') return true;
+
+    // Backward-compatible fallback: rely on displayed status text
+    const statusEl = card.querySelector('.media-detail-video-item-status');
+    const statusText = statusEl ? String(statusEl.textContent || '').trim() : '';
+    return statusText === '连接异常';
+  }
+
+  function applyVideoFilters() {
+    if (!detailVideoResults) return;
+
+    const hideConnErrors = Boolean(videoFilterState.hideConnErrors);
+
+    const cards = detailVideoResults.querySelectorAll('.media-detail-video-item');
+    cards.forEach((card) => {
+      if (!(card instanceof HTMLElement)) return;
+
+      let shouldHide = false;
+      if (hideConnErrors && isConnErrorVideoCard(card)) {
+        shouldHide = true;
+      }
+
+      // Safety: avoid hiding selected card (even though "连接异常" cards are usually non-selectable)
+      if (shouldHide && card.classList.contains('is-selected')) {
+        shouldHide = false;
+      }
+
+      card.classList.toggle('is-hidden-by-filter', shouldHide);
+    });
+  }
 
   // Video favorites: video_url -> library item id
   const videoFavoriteByUrl = new Map();
@@ -529,6 +641,9 @@
     let dragStartY = 0;
     let dragStartThumbTop = 0;
     let activePointerId = null;
+    let captureEl = null;
+    let dragMoved = false;
+    let suppressTrackClickUntil = 0;
 
     const TRACK_PADDING = 10; // must match CSS top/bottom padding in ::before
 
@@ -600,13 +715,49 @@
       }
     };
 
-    // Sync on scroll
+    const beginDrag = (e, opts = {}) => {
+      const { initialThumbTop = null, captureTarget = null } = opts || {};
+
+      dragging = true;
+      dragMoved = false;
+      activePointerId = e.pointerId;
+      dragStartY = e.clientY;
+
+      // Ensure thumb is up-to-date before reading/clamping positions
+      updateThumb();
+
+      const { trackH } = getMetrics();
+      const thumbH = Math.max(24, detailVideoScrollbarThumb.offsetHeight || 24);
+      const maxThumbTop = Math.max(0, trackH - thumbH);
+
+      if (typeof initialThumbTop === 'number' && Number.isFinite(initialThumbTop)) {
+        dragStartThumbTop = clamp(initialThumbTop, 0, maxThumbTop);
+      } else {
+        dragStartThumbTop = clamp(getCurrentThumbTop(), 0, maxThumbTop);
+      }
+
+      // Capture pointer on the element that received the interaction
+      captureEl = (captureTarget instanceof HTMLElement) ? captureTarget : null;
+      try {
+        if (captureEl) captureEl.setPointerCapture(e.pointerId);
+      } catch (err) {
+        // ignore
+      }
+
+      document.addEventListener('pointermove', onPointerMove, { passive: false });
+      document.addEventListener('pointerup', stopDrag);
+      document.addEventListener('pointercancel', stopDrag);
+
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    // Sync on scroll (when not dragging)
     detailVideoResults.addEventListener('scroll', () => {
       if (dragging) return;
       updateThumb();
     });
 
-    // Drag thumb (during dragging, we must ALSO move the thumb itself; scroll handler is suppressed)
     const onPointerMove = (e) => {
       if (!dragging) return;
 
@@ -615,6 +766,11 @@
       const maxThumbTop = Math.max(0, trackH - thumbH);
 
       const dy = (e.clientY - dragStartY);
+      if (!dragMoved && Math.abs(dy) >= 2) {
+        dragMoved = true;
+        suppressTrackClickUntil = Date.now() + 250;
+      }
+
       const desiredTop = dragStartThumbTop + dy;
       const nextThumbTop = clamp(desiredTop, 0, maxThumbTop);
 
@@ -637,43 +793,51 @@
 
       // best-effort release pointer capture
       try {
-        if (typeof activePointerId === 'number') {
-          detailVideoScrollbarThumb.releasePointerCapture(activePointerId);
+        if (captureEl && typeof activePointerId === 'number') {
+          captureEl.releasePointerCapture(activePointerId);
         }
       } catch (err) {
         // ignore
       }
 
       activePointerId = null;
+      captureEl = null;
 
       // Re-sync thumb with scrollTop
       updateThumb();
     };
 
+    // Thumb drag
     detailVideoScrollbarThumb.addEventListener('pointerdown', (e) => {
-      dragging = true;
-      activePointerId = e.pointerId;
-      dragStartY = e.clientY;
+      beginDrag(e, { captureTarget: detailVideoScrollbarThumb });
+    });
 
-      // Ensure thumb is up-to-date before reading position
-      updateThumb();
-      dragStartThumbTop = getCurrentThumbTop();
+    // Track drag: click/drag anywhere on the rail to jump and then drag
+    detailVideoScrollbar.addEventListener('pointerdown', (e) => {
+      const target = e.target;
+      if (target === detailVideoScrollbarThumb) return;
 
-      try {
-        detailVideoScrollbarThumb.setPointerCapture(e.pointerId);
-      } catch (err) {
-        // ignore
-      }
-      document.addEventListener('pointermove', onPointerMove, { passive: false });
-      document.addEventListener('pointerup', stopDrag);
-      document.addEventListener('pointercancel', stopDrag);
-      e.preventDefault();
-      e.stopPropagation();
+      const rect = detailVideoScrollbar.getBoundingClientRect();
+      const rawY = e.clientY - rect.top - TRACK_PADDING;
+
+      updateThumb(); // ensure thumbH is correct
+      const { trackH } = getMetrics();
+      const thumbH = Math.max(24, detailVideoScrollbarThumb.offsetHeight || 24);
+      const maxThumbTop = Math.max(0, trackH - thumbH);
+
+      const desiredTop = clamp(rawY - (thumbH / 2), 0, maxThumbTop);
+
+      // Jump immediately (no smooth) to feel "grab-by-rail"
+      detailVideoScrollbarThumb.style.top = `${TRACK_PADDING + Math.round(desiredTop)}px`;
+      scrollToThumbPosition(desiredTop, { snap: false });
+
+      beginDrag(e, { initialThumbTop: desiredTop, captureTarget: detailVideoScrollbar });
     });
 
     // Click track to jump (center thumb on click)
     detailVideoScrollbar.addEventListener('click', (e) => {
       if (dragging) return;
+      if (Date.now() < suppressTrackClickUntil) return;
 
       const target = e.target;
       if (target === detailVideoScrollbarThumb) return;
@@ -686,6 +850,21 @@
 
       scrollToThumbPosition(desiredTop, { snap: true });
     });
+
+    // Wheel on the rail should scroll the list (helps trackpad + precise control)
+    detailVideoScrollbar.addEventListener('wheel', (e) => {
+      if (!detailVideoResults) return;
+      if (!e) return;
+
+      // Let Ctrl+wheel (browser zoom) pass through
+      if (e.ctrlKey) return;
+
+      const dy = Number(e.deltaY || 0);
+      if (!Number.isFinite(dy) || dy === 0) return;
+
+      detailVideoResults.scrollTop = Number(detailVideoResults.scrollTop || 0) + dy;
+      e.preventDefault();
+    }, { passive: false });
 
     // Recalc on resize
     window.addEventListener('resize', () => updateThumb());
@@ -1142,6 +1321,10 @@
     }
 
     container.appendChild(item);
+
+    // Apply filters for newly created cards (no-op for normal states; keeps behavior consistent).
+    applyVideoFilters();
+
     return item;
   }
 
@@ -1159,6 +1342,18 @@
       job.source = null;
     }
 
+    // Machine-readable error marker for filtering (avoid relying on Chinese text).
+    const errorType = options && options.errorType ? String(options.errorType || '').trim() : '';
+    if (errorType) {
+      job.item.dataset.videoErrorType = errorType;
+    } else {
+      try {
+        delete job.item.dataset.videoErrorType;
+      } catch (e) {
+        // ignore
+      }
+    }
+
     if (options && options.error) {
       setVideoItemStatus(job.item, options.error, 'error');
     } else if (!job.item.dataset.videoUrl) {
@@ -1166,6 +1361,9 @@
     } else {
       setVideoItemStatus(job.item, '完成', 'done');
     }
+
+    // Re-apply filters so newly-marked "conn error" cards can be hidden immediately.
+    applyVideoFilters();
 
     const allDone = Array.from(videoState.jobs.values()).every((it) => it.done);
     if (allDone) {
@@ -1255,7 +1453,7 @@
     es.onerror = () => {
       const jobState = videoState.jobs.get(taskId);
       if (!jobState || jobState.done) return;
-      completeVideoJob(taskId, { error: '连接异常' });
+      completeVideoJob(taskId, { error: '连接异常', errorType: 'conn' });
     };
   }
 
@@ -1304,6 +1502,9 @@
         // ignore
       }
     }
+
+    // Persist clamped value so user won't "snap back" to 1 on next visit.
+    saveVideoParallelPref(parallel);
 
     if (requestedParallel > maxParallel) {
       toast(`并发过高，已限制为 ${maxParallel}`, 'warning');
@@ -2166,6 +2367,44 @@
     bindDetailVideoAdvancedToggle();
     bindDetailVideoDownloads();
     bindDetailVideoClearButton();
+
+    // T8: remember advanced setting "parallel" (1-8)
+    if (detailVideoParallelSelect) {
+      const maxParallelFromAttr = parseInt(String(detailVideoParallelSelect.getAttribute ? (detailVideoParallelSelect.getAttribute('max') || '') : ''), 10);
+      const maxParallel = (Number.isFinite(maxParallelFromAttr) && maxParallelFromAttr > 0) ? maxParallelFromAttr : 8;
+
+      const saved = loadVideoParallelPref();
+      if (saved !== null) {
+        const next = Math.max(1, Math.min(maxParallel, saved));
+        try {
+          detailVideoParallelSelect.value = String(next);
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      detailVideoParallelSelect.addEventListener('change', () => {
+        saveVideoParallelPref(detailVideoParallelSelect.value);
+      });
+    }
+
+    // T19: video list filter (hide connection errors)
+    videoFilterState.hideConnErrors = loadHideConnErrorsPref();
+    const hideConnToggle = document.getElementById('detailVideoHideConnErrToggle');
+    if (hideConnToggle) {
+      try {
+        hideConnToggle.checked = Boolean(videoFilterState.hideConnErrors);
+      } catch (e) {
+        // ignore
+      }
+      hideConnToggle.addEventListener('change', () => {
+        videoFilterState.hideConnErrors = Boolean(hideConnToggle.checked);
+        saveHideConnErrorsPref(videoFilterState.hideConnErrors);
+        applyVideoFilters();
+      });
+    }
+    applyVideoFilters();
+
     bindCustomVideoScrollbar();
     setVideoButtons(false);
     setVideoStatus('未开始');
