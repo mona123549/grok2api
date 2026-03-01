@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field
 
 from app.core.auth import verify_public_key
+from app.core.config import get_config
 from app.core.logger import logger
 from app.services.grok.services.video import VideoService
 from app.services.grok.services.model import ModelService
@@ -199,7 +200,8 @@ class VideoStartRequest(BaseModel):
     video_length: Optional[int] = 6
     resolution_name: Optional[str] = "480p"
     preset: Optional[str] = "normal"
-    concurrent: Optional[int] = Field(1, ge=1, le=4)
+    # Upper bound is controlled by config: video.public_max_concurrent
+    concurrent: Optional[int] = Field(1, ge=1)
     image_url: Optional[str] = None
     parent_post_id: Optional[str] = None
     source_image_url: Optional[str] = None
@@ -237,9 +239,16 @@ async def public_video_start(data: VideoStartRequest):
             status_code=400,
             detail="preset must be one of ['fun','normal','spicy','custom']",
         )
+
     concurrent = int(data.concurrent or 1)
-    if concurrent < 1 or concurrent > 4:
-        raise HTTPException(status_code=400, detail="concurrent must be between 1 and 4")
+    max_concurrent = int(get_config("video.public_max_concurrent", 8) or 8)
+    if max_concurrent < 1:
+        max_concurrent = 1
+    if concurrent < 1 or concurrent > max_concurrent:
+        raise HTTPException(
+            status_code=400,
+            detail=f"concurrent must be between 1 and {max_concurrent}",
+        )
 
     image_url = (data.image_url or "").strip() or None
     if image_url:

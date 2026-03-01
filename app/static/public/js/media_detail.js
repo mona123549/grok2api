@@ -951,7 +951,6 @@
 
     item.innerHTML = `
       <div class="media-detail-video-item-head">
-        <div class="media-detail-video-item-title">任务 ${index}</div>
         <div class="media-detail-video-item-status running">排队中</div>
       </div>
       <div class="media-detail-video-item-body">
@@ -1123,7 +1122,27 @@
     // Preload video favorites so finished cards can auto-highlight.
     preloadVideoFavoriteIndex(authHeader);
 
-    const parallel = Math.max(1, Math.min(4, parseInt(String(detailVideoParallelSelect ? detailVideoParallelSelect.value : '1'), 10) || 1));
+    const rawParallel = parseInt(String(detailVideoParallelSelect ? detailVideoParallelSelect.value : '1'), 10);
+    const requestedParallel = Number.isFinite(rawParallel) ? rawParallel : 1;
+
+    const maxParallelFromAttr = parseInt(String(detailVideoParallelSelect && detailVideoParallelSelect.getAttribute ? (detailVideoParallelSelect.getAttribute('max') || '') : ''), 10);
+    const maxParallel = (Number.isFinite(maxParallelFromAttr) && maxParallelFromAttr > 0) ? maxParallelFromAttr : 8;
+
+    const parallel = Math.max(1, Math.min(maxParallel, requestedParallel || 1));
+
+    // Keep UI value consistent after clamping (best-effort)
+    if (detailVideoParallelSelect) {
+      try {
+        detailVideoParallelSelect.value = String(parallel);
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    if (requestedParallel > maxParallel) {
+      toast(`并发过高，已限制为 ${maxParallel}`, 'warning');
+    }
+
     const prompt = String(detailVideoPromptInput ? detailVideoPromptInput.value : '').trim();
 
     // Reset current run container; create it only after at least one task is created successfully.
@@ -1139,22 +1158,24 @@
       source_image_url: sourceImageUrl || buildImaginePublicUrl(parentPostId),
     };
 
-    const taskIds = [];
-    for (let i = 0; i < parallel; i++) {
-      try {
-        const resp = await createVideoTask(authHeader, payload);
-        const taskId = String(resp && resp.task_id ? resp.task_id : '').trim();
-        if (!taskId) throw new Error('missing_task_id');
-        taskIds.push(taskId);
-      } catch (e) {
-        toast(`第 ${i + 1} 路视频任务创建失败`, 'error');
-        break;
-      }
+    let taskIds = [];
+    try {
+      const resp = await createVideoTask(authHeader, { ...payload, concurrent: parallel });
+
+      const list = (resp && Array.isArray(resp.task_ids)) ? resp.task_ids : [];
+      const single = String(resp && resp.task_id ? resp.task_id : '').trim();
+
+      taskIds = (list && list.length ? list : (single ? [single] : []))
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
+    } catch (e) {
+      taskIds = [];
     }
 
     if (!taskIds.length) {
       setVideoStatus('创建失败');
       setVideoButtons(false);
+      toast('视频任务创建失败', 'error');
       return;
     }
 
@@ -1167,6 +1188,10 @@
     videoState.taskIds = taskIds.slice();
     setVideoButtons(true);
     setVideoStatus('运行中');
+
+    if (taskIds.length < parallel) {
+      toast(`仅创建了 ${taskIds.length}/${parallel} 个任务`, 'warning');
+    }
 
     taskIds.forEach((taskId, idx) => {
       const card = createVideoCard(idx + 1, taskId, currentVideoRunListEl, currentVideoThumbUrl);

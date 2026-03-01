@@ -418,14 +418,20 @@ html[data-theme='dark'] .media-detail-video-empty {
 }
 
 .media-detail-video-results {
-  /* Use flex-column to avoid rare grid+<details> relayout issues that can show as run overlap after multiple prepends/toggles */
-  display: flex;
-  flex-direction: column;
+  /* Task wall: grid layout is more readable for high concurrency */
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 10px;
   align-items: stretch;
 
   /* Stabilize scrollbar width when it becomes scrollable (desktop rules will set overflow) */
   scrollbar-gutter: stable;
+}
+
+@media (min-width: 1101px) {
+  .media-detail-video-results {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 /* Run grouping (T5) */
@@ -490,6 +496,11 @@ html[data-theme='dark'] .media-detail-video-run {
   cursor: pointer;
   transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
   scroll-snap-align: start;
+
+  /* Keep item geometry stable in grid */
+  height: 172px;
+  display: flex;
+  flex-direction: column;
 }
 
 .media-detail-video-item:hover {
@@ -566,7 +577,7 @@ html[data-theme='dark'] .media-detail-video-item {
 .media-detail-video-thumb {
   position: relative;
   width: 100%;
-  height: 120px;
+  height: 96px;
   border-radius: 12px;
   overflow: hidden;
   background: #000;

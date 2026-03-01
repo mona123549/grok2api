@@ -108,6 +108,10 @@ final_min_bytes = 100000
 [video]
 # Reverse 接口并发上限
 concurrent = 100
+
+# Public video start 并发上限（/v1/public/video/start），用于兜底防误操作
+public_max_concurrent = 8
+
 # Reverse 接口超时时间（秒）
 timeout = 60
 # 流式空闲超时时间（秒）

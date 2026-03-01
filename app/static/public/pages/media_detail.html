@@ -177,13 +177,9 @@
         </div>
 
         <div class="media-detail-video-advanced-field">
-          <label class="field-label" for="detailVideoParallelSelect">并发</label>
-          <select id="detailVideoParallelSelect" class="geist-input">
-            <option value="1" selected>1 路</option>
-            <option value="2">2 路</option>
-            <option value="3">3 路</option>
-            <option value="4">4 路</option>
-          </select>
+          <label class="field-label" for="detailVideoParallelSelect">并发（1-8）</label>
+          <input id="detailVideoParallelSelect" class="geist-input" type="number" inputmode="numeric" min="1" max="8"
+            step="1" value="1" />
         </div>
 
         <div class="media-detail-video-advanced-field">
