@@ -1,11 +1,14 @@
 import asyncio
+import base64
 import contextlib
+import os
 import re
 import time
 import uuid
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 
+import aiofiles
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -14,10 +17,16 @@ from pydantic import BaseModel
 from app.core.auth import verify_public_key, get_public_api_key, is_public_enabled
 from app.core.config import get_config
 from app.core.logger import logger
+from app.core.storage import DATA_DIR
 from app.api.v1.image import resolve_aspect_ratio
 from app.services.grok.services.image import ImageGenerationService
 from app.services.grok.services.image_edit import ImageEditService
 from app.services.grok.services.model import ModelService
+from app.services.grok.utils.cache_index import (
+    build_dedupe_key,
+    build_image_file_name,
+    upsert_item_by_dedupe_key,
+)
 from app.services.token.manager import get_token_manager
 
 router = APIRouter()
@@ -157,6 +166,104 @@ def _normalize_image_input(image_base64: str, image_url: str) -> str:
     )
 
 
+def _extract_b64_from_payload(payload: Dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    candidates = [
+        payload.get("b64_json"),
+        payload.get("b64"),
+        payload.get("image"),
+        payload.get("data"),
+    ]
+    for val in candidates:
+        text = str(val or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _decode_b64_image(raw: str) -> bytes:
+    """
+    Decode a base64 string or data URL into bytes.
+    Raises on failure.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("empty_image_b64")
+
+    if text.startswith("data:"):
+        # data:<mime>;base64,<payload>
+        comma = text.find(",")
+        if comma >= 0:
+            text = text[comma + 1 :]
+
+    compact = re.sub(r"\s+", "", text)
+    if not compact:
+        raise ValueError("empty_image_b64")
+
+    return base64.b64decode(compact)
+
+
+async def _write_image_bytes_to_tmp(parent_post_id: str, data: bytes) -> str:
+    """
+    Persist final image bytes into DATA_DIR/tmp/image.
+    Returns file_name.
+    """
+    pid = str(parent_post_id or "").strip()
+    if not pid:
+        raise ValueError("missing_parent_post_id")
+    if not data:
+        raise ValueError("empty_image_bytes")
+
+    dir_path = DATA_DIR / "tmp" / "image"
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+    file_name = build_image_file_name(pid, ext="jpg")
+    target = dir_path / file_name
+    tmp_path = target.with_suffix(target.suffix + ".tmp")
+
+    async with aiofiles.open(tmp_path, "wb") as f:
+        await f.write(data)
+
+    os.replace(tmp_path, target)
+    return file_name
+
+
+async def _persist_media_final_to_cache_index(*, parent_post_id: str, b64_text: str, prompt: str) -> None:
+    """
+    Persist final image for /media:
+    - Write file to DATA_DIR/tmp/image/<parent_post_id>.jpg
+    - Upsert personal cache index (S1-B local file)
+    """
+    pid = str(parent_post_id or "").strip()
+    if not pid:
+        return
+    if not b64_text:
+        return
+
+    try:
+        raw = _decode_b64_image(b64_text)
+        file_name = await _write_image_bytes_to_tmp(pid, raw)
+        view_url = f"/v1/files/image/{file_name}"
+
+        await upsert_item_by_dedupe_key(
+            {
+                "id": build_dedupe_key("image", pid),
+                "media_type": "image",
+                "origin": "media",
+                "kind": "image_final",
+                "parent_post_id": pid,
+                "prompt": str(prompt or "").strip(),
+                "source_image_url": _build_imagine_public_url(pid),
+                "file_name": file_name,
+                "view_url": view_url,
+                "dedupe_key": build_dedupe_key("image", pid),
+            }
+        )
+    except Exception as e:
+        logger.warning(f"Imagine: persist media final ignored: parent_post_id={pid}, err={e}")
+
+
 async def _clean_sessions(now: float) -> None:
     expired = [
         key
@@ -249,6 +356,7 @@ async def _new_session(
     aspect_ratio: str,
     nsfw: Optional[bool],
     n: Optional[int] = None,
+    origin: Optional[str] = "",
 ) -> str:
     task_id = uuid.uuid4().hex
     now = time.time()
@@ -261,6 +369,10 @@ async def _new_session(
             safe_n = 6
     safe_n = max(1, min(6, safe_n))
 
+    raw_origin = str(origin or "").strip().lower()
+    # only "media" is meaningful for now; keep empty for everything else
+    safe_origin = "media" if raw_origin == "media" else ""
+
     async with _IMAGINE_SESSIONS_LOCK:
         await _clean_sessions(now)
         _IMAGINE_SESSIONS[task_id] = {
@@ -268,6 +380,7 @@ async def _new_session(
             "aspect_ratio": aspect_ratio,
             "nsfw": nsfw,
             "n": safe_n,
+            "origin": safe_origin,
             "created_at": now,
         }
     return task_id
@@ -354,7 +467,7 @@ async def public_imagine_ws(websocket: WebSocket):
         run_task = None
         stop_event.clear()
 
-    async def _run(prompt: str, aspect_ratio: str, nsfw: Optional[bool], n: int):
+    async def _run(prompt: str, aspect_ratio: str, nsfw: Optional[bool], n: int, origin: str = ""):
         model_id = "grok-imagine-1.0"
         model_info = ModelService.get(model_id)
         if not model_info or not model_info.is_image:
@@ -425,6 +538,14 @@ async def public_imagine_ws(websocket: WebSocket):
                         parent_post_id = _extract_parent_post_id_from_payload(payload)
                         if parent_post_id:
                             await _bind_image_token(parent_post_id, token)
+
+                        if origin == "media" and str(payload.get("type") or "") == "image_generation.completed":
+                            b64_text = _extract_b64_from_payload(payload)
+                            await _persist_media_final_to_cache_index(
+                                parent_post_id=parent_post_id,
+                                b64_text=b64_text,
+                                prompt=prompt,
+                            )
                     await _send(payload)
             else:
                 images = [img for img in result.data if img and img != "error"]
@@ -521,8 +642,12 @@ async def public_imagine_ws(websocket: WebSocket):
                     n = 6
                 n = max(1, min(6, n))
 
+                session_origin = ""
+                if session and isinstance(session, dict):
+                    session_origin = str(session.get("origin") or "").strip().lower()
+
                 await _stop_run()
-                run_task = asyncio.create_task(_run(prompt, aspect_ratio, nsfw, n))
+                run_task = asyncio.create_task(_run(prompt, aspect_ratio, nsfw, n, origin=session_origin))
             elif action == "stop":
                 await _stop_run()
             else:
@@ -576,10 +701,12 @@ async def public_imagine_sse(
             if key != public_key:
                 raise HTTPException(status_code=401, detail="Invalid authentication token")
 
+    origin = ""
     if session:
         prompt = str(session.get("prompt") or "").strip()
         ratio = _normalize_imagine_ratio(session.get("aspect_ratio"))
         nsfw = session.get("nsfw")
+        origin = str(session.get("origin") or "").strip().lower()
         try:
             n = int(session.get("n") or 6)
         except Exception:
@@ -666,6 +793,14 @@ async def public_imagine_sse(
                             parent_post_id = _extract_parent_post_id_from_payload(payload)
                             if parent_post_id:
                                 await _bind_image_token(parent_post_id, token)
+
+                            if origin == "media" and str(payload.get("type") or "") == "image_generation.completed":
+                                b64_text = _extract_b64_from_payload(payload)
+                                await _persist_media_final_to_cache_index(
+                                    parent_post_id=parent_post_id,
+                                    b64_text=b64_text,
+                                    prompt=prompt,
+                                )
                         yield f"data: {orjson.dumps(payload).decode()}\n\n"
                 else:
                     images = [img for img in result.data if img and img != "error"]
@@ -727,6 +862,8 @@ class ImagineStartRequest(BaseModel):
     aspect_ratio: Optional[str] = "2:3"
     nsfw: Optional[bool] = None
     n: Optional[int] = None
+    # only /media will set origin=media; /imagine should keep it empty
+    origin: Optional[str] = ""
 
 
 @router.post("/imagine/start", dependencies=[Depends(verify_public_key)])
@@ -735,7 +872,7 @@ async def public_imagine_start(data: ImagineStartRequest):
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
     ratio = _normalize_imagine_ratio(data.aspect_ratio)
-    task_id = await _new_session(prompt, ratio, data.nsfw, data.n)
+    task_id = await _new_session(prompt, ratio, data.nsfw, data.n, origin=data.origin)
     return {"task_id": task_id, "aspect_ratio": ratio}
 
 

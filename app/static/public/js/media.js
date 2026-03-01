@@ -781,7 +781,8 @@
         ...buildAuthHeaders(authHeader),
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ prompt, aspect_ratio: ratio, nsfw: nsfwEnabled, n })
+      // NOTE: only /media sets origin=media, so backend can persist final to tmp + cache index without affecting /imagine
+      body: JSON.stringify({ prompt, aspect_ratio: ratio, nsfw: nsfwEnabled, n, origin: 'media' })
     });
     if (!res.ok) {
       const text = await res.text();

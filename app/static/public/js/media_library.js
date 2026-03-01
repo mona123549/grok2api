@@ -74,11 +74,14 @@
 
   function pickBestImageUrl(item) {
     if (!item || typeof item !== 'object') return '';
+    const viewUrl = String(item.view_url || '').trim();
     const imageUrl = String(item.image_url || '').trim();
     const sourceImageUrl = String(item.source_image_url || '').trim();
     const parentPostId = String(item.parent_post_id || '').trim();
 
+    // Prefer local cached file url (view_url) for cache-index items
     const candidates = [
+      normalizeHttpUrl(viewUrl),
       normalizeHttpUrl(imageUrl),
       normalizeHttpUrl(sourceImageUrl),
       parentPostId ? buildImaginePublicUrl(parentPostId) : '',
@@ -578,20 +581,27 @@
 
   async function deleteCacheItem(item, btn) {
     if (!item || typeof item !== 'object') return;
-    const name = String(item.name || '').trim();
-    const mediaType = String(item.media_type || '').trim();
-    if (!name || !mediaType) return;
+
+    const mediaType = String(item.media_type || '').trim() || 'image';
+    const parentPostId = String(item.parent_post_id || '').trim();
+    const fileName = String(item.file_name || item.name || '').trim();
+
+    if (!parentPostId && !fileName) return;
 
     if (btn) btn.disabled = true;
 
     try {
-      const resp = await apiFetchJsonPersonal('/v1/public/personal/cache/item/delete', {
+      const resp = await apiFetchJsonPersonal('/v1/public/personal/cache_index/item/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: mediaType, name }),
+        body: JSON.stringify({
+          media_type: mediaType,
+          parent_post_id: parentPostId,
+          file_name: fileName,
+        }),
       });
 
-      const ok = Boolean(resp && resp.result && resp.result.deleted);
+      const ok = Boolean(resp && resp.deleted);
       if (!ok) {
         toast('删除失败', 'error');
         return;
@@ -605,7 +615,13 @@
       state.total = Math.max(0, state.total - 1);
       setCounts(state.total, state.shown);
       renderEmptyIfNeeded();
-      toast('已删除', 'success');
+
+      const fileDeleted = Boolean(resp && resp.file && resp.file.deleted);
+      if (!fileDeleted) {
+        toast('索引已删除（文件可能已不存在）', 'info');
+      } else {
+        toast('已删除', 'success');
+      }
     } catch (e) {
       toast('删除失败', 'error');
     } finally {
@@ -614,14 +630,19 @@
   }
 
   function createCacheCard(item) {
-    const mediaType = String(item && item.media_type ? item.media_type : '').trim() || '-';
-    const createdAt = formatTime(item && item.mtime_ms ? item.mtime_ms : 0);
-    const name = String(item && item.name ? item.name : '').trim();
+    const mediaType = String(item && item.media_type ? item.media_type : '').trim() || 'image';
+    const createdAt = formatTime(
+      (item && (item.updated_at || item.created_at || item.mtime_ms)) ? (item.updated_at || item.created_at || item.mtime_ms) : 0
+    );
+
+    const parentPostId = String(item && item.parent_post_id ? item.parent_post_id : '').trim();
+    const fileName = String(item && (item.file_name || item.name) ? (item.file_name || item.name) : '').trim();
     const url = String(item && item.view_url ? item.view_url : '').trim();
+    const prompt = String(item && item.prompt ? item.prompt : '').trim();
 
     const card = document.createElement('div');
     card.className = 'mlib-card';
-    card.dataset.id = `cache:${mediaType}:${name}`;
+    card.dataset.id = `cache_index:${mediaType}:${parentPostId || fileName || '-'}`;
     card.dataset.mediaType = mediaType;
 
     // cache card: no favorite button
@@ -645,7 +666,7 @@
       img.className = 'mlib-thumb';
       img.loading = 'lazy';
       img.decoding = 'async';
-      img.alt = name || 'cache';
+      img.alt = parentPostId || fileName || 'cache';
       img.src = url;
       card.appendChild(img);
     }
@@ -668,7 +689,7 @@
 
     const sub = document.createElement('div');
     sub.className = 'mlib-card-sub';
-    sub.textContent = name ? name : '（无文件名）';
+    sub.textContent = prompt ? prompt : (fileName ? fileName : '（无 prompt）');
 
     const actions = document.createElement('div');
     actions.className = 'mlib-card-actions';
@@ -683,6 +704,17 @@
       else open.href = '#';
       actions.appendChild(open);
     } else {
+      const view = document.createElement('button');
+      view.type = 'button';
+      view.className = 'geist-button mlib-mini-btn';
+      view.textContent = '打开详情';
+      view.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        window.location.href = buildMediaDetailUrl(item);
+      });
+      actions.appendChild(view);
+
       const open = document.createElement('a');
       open.className = 'geist-button-outline mlib-mini-btn';
       open.target = '_blank';
@@ -701,7 +733,8 @@
     del.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const ok = await showConfirmDialog(`确认删除缓存文件？\n${name}`, { title: '删除缓存文件', okText: '删除' });
+      const label = parentPostId || fileName || '-';
+      const ok = await showConfirmDialog(`确认删除缓存文件？\n${label}`, { title: '删除缓存文件', okText: '删除' });
       if (!ok) return;
       await deleteCacheItem(item, del);
     });
@@ -711,6 +744,18 @@
     meta.appendChild(sub);
     meta.appendChild(actions);
     card.appendChild(meta);
+
+    card.addEventListener('click', () => {
+      if (mediaType === 'video') {
+        if (url) {
+          window.open(url, '_blank', 'noopener');
+        } else {
+          toast('缺少 video_url', 'error');
+        }
+        return;
+      }
+      window.location.href = buildMediaDetailUrl(item);
+    });
 
     return card;
   }
@@ -748,6 +793,8 @@
     if (state.loading) return;
     state.loading = true;
 
+    let fallbackToLibrary = false;
+
     setStatus('加载中...', 'connecting');
     if (loadMoreBtn) {
       loadMoreBtn.disabled = true;
@@ -771,10 +818,14 @@
         const params = new URLSearchParams();
         params.set('page', String(page));
         params.set('page_size', String(state.pageSize));
-        // cache API uses type=image|video|all
-        params.set('type', mediaType ? mediaType : 'all');
 
-        const data = await apiFetchJsonPersonal(`/v1/public/personal/cache/list?${params.toString()}`, {
+        // cache index API uses media_type=image|video (this plan focuses on image)
+        const mt = (mediaType === 'video' || mediaType === 'image') ? mediaType : 'image';
+        params.set('media_type', mt);
+        params.set('origin', 'media');
+        if (q) params.set('q', q);
+
+        const data = await apiFetchJsonPersonal(`/v1/public/personal/cache_index/list?${params.toString()}`, {
           method: 'GET',
         });
         if (!data) return;
@@ -816,17 +867,37 @@
       renderItems(items, append);
       setStatus('已加载', 'connected');
     } catch (e) {
-      setStatus('加载失败', 'error');
-      toast('加载失败', 'error');
-      if (loadMoreBtn) {
-        loadMoreBtn.disabled = false;
-        loadMoreBtn.textContent = '重试加载更多';
+      const msg = String(e && e.message ? e.message : '');
+
+      // personal mode disabled -> backend returns 404 via [`verify_personal_key()`](app/core/auth.py:175)
+      if (state.dataSource === 'cache' && (msg.includes('Not found') || msg.includes('404'))) {
+        toast('个人模式未启用（已回退到历史库）', 'info');
+        setStatus('个人模式未启用', 'error');
+        state.dataSource = 'library';
+        if (favoriteOnlyToggle) {
+          favoriteOnlyToggle.disabled = false;
+        }
+        state.page = 1;
+        state.total = 0;
+        state.shown = 0;
+        state.hasMore = true;
+        fallbackToLibrary = true;
+      } else {
+        setStatus('加载失败', 'error');
+        toast('加载失败', 'error');
+        if (loadMoreBtn) {
+          loadMoreBtn.disabled = false;
+          loadMoreBtn.textContent = '重试加载更多';
+        }
       }
     } finally {
       state.loading = false;
       if (loadMoreBtn) {
         loadMoreBtn.disabled = state.loading || !state.hasMore;
         loadMoreBtn.textContent = state.hasMore ? '加载更多' : '没有更多了';
+      }
+      if (fallbackToLibrary) {
+        loadPage(1, false);
       }
     }
   }
