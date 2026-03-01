@@ -33,6 +33,11 @@
   <main class="flex-1 mx-auto w-full max-w-none px-4 sm:px-6 py-5 sm:py-8 fade-in">
     <div class="media-detail-layout">
       <aside class="media-detail-video-column" aria-label="Media detail video list">
+        <!-- Always-visible custom scrollbar for left video list (T11) -->
+        <div id="detailVideoScrollbar" class="md-video-scrollbar" aria-hidden="true">
+          <div class="md-video-scrollbar-thumb" aria-hidden="true"></div>
+        </div>
+
         <section class="media-detail-video-surface" aria-label="Media detail video results">
           <div class="media-detail-video-head">
             <div class="media-detail-video-title">视频结果</div>

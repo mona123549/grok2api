@@ -32,6 +32,8 @@
   const detailVideoStatusText = document.getElementById('detailVideoStatusText');
   const detailVideoEmpty = document.getElementById('detailVideoEmpty');
   const detailVideoResults = document.getElementById('detailVideoResults');
+  const detailVideoScrollbar = document.getElementById('detailVideoScrollbar');
+  const detailVideoScrollbarThumb = detailVideoScrollbar ? detailVideoScrollbar.querySelector('.md-video-scrollbar-thumb') : null;
   const detailVideoClearBtn = document.getElementById('detailVideoClearBtn');
 
   // T6/T7: clear confirm modal
@@ -519,6 +521,165 @@
     });
   }
 
+
+  function bindCustomVideoScrollbar() {
+    if (!detailVideoResults || !detailVideoScrollbar || !detailVideoScrollbarThumb) return;
+
+    let dragging = false;
+    let dragStartY = 0;
+    let dragStartThumbTop = 0;
+
+    const TRACK_PADDING = 10; // must match CSS top/bottom padding in ::before
+
+    const getMetrics = () => {
+      const scrollEl = detailVideoResults;
+      const scrollH = Math.max(0, scrollEl.scrollHeight || 0);
+      const clientH = Math.max(1, scrollEl.clientHeight || 1);
+
+      const trackRect = detailVideoScrollbar.getBoundingClientRect();
+      const trackH = Math.max(0, trackRect.height - (TRACK_PADDING * 2));
+
+      return { scrollH, clientH, trackH, trackRect };
+    };
+
+    const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+
+    const getCurrentThumbTop = () => {
+      // Thumb top relative to scrollable track area (excluding padding)
+      const styleTop = parseFloat(String(detailVideoScrollbarThumb.style.top || ''));
+      if (Number.isFinite(styleTop)) {
+        return Math.max(0, styleTop - TRACK_PADDING);
+      }
+
+      // Fallback: measure DOM
+      const { trackRect } = getMetrics();
+      const thumbRect = detailVideoScrollbarThumb.getBoundingClientRect();
+      return Math.max(0, (thumbRect.top - trackRect.top) - TRACK_PADDING);
+    };
+
+    const updateThumb = () => {
+      const { scrollH, clientH, trackH } = getMetrics();
+      const maxScroll = Math.max(0, scrollH - clientH);
+
+      // Hide thumb if not scrollable
+      if (maxScroll <= 0 || trackH <= 0) {
+        detailVideoScrollbarThumb.style.display = 'none';
+        return;
+      }
+      detailVideoScrollbarThumb.style.display = '';
+
+      const ratioVisible = clamp(clientH / scrollH, 0, 1);
+      const thumbH = Math.max(24, Math.round(trackH * ratioVisible));
+      const maxThumbTop = Math.max(0, trackH - thumbH);
+
+      const scrollTop = Math.max(0, Number(detailVideoResults.scrollTop || 0));
+      const t = maxScroll > 0 ? (scrollTop / maxScroll) : 0;
+      const thumbTop = Math.round(maxThumbTop * t);
+
+      detailVideoScrollbarThumb.style.height = `${thumbH}px`;
+      detailVideoScrollbarThumb.style.top = `${TRACK_PADDING + thumbTop}px`;
+    };
+
+    const scrollToThumbPosition = (thumbTopPx, { snap = false } = {}) => {
+      const { scrollH, clientH, trackH } = getMetrics();
+      const maxScroll = Math.max(0, scrollH - clientH);
+      if (maxScroll <= 0 || trackH <= 0) return;
+
+      const thumbH = Math.max(24, detailVideoScrollbarThumb.offsetHeight || 24);
+      const maxThumbTop = Math.max(0, trackH - thumbH);
+
+      const thumbTop = clamp(thumbTopPx, 0, maxThumbTop);
+      const t = maxThumbTop > 0 ? (thumbTop / maxThumbTop) : 0;
+
+      const nextScrollTop = Math.round(maxScroll * t);
+      if (snap) {
+        detailVideoResults.scrollTo({ top: nextScrollTop, behavior: 'smooth' });
+      } else {
+        detailVideoResults.scrollTop = nextScrollTop;
+      }
+    };
+
+    // Sync on scroll
+    detailVideoResults.addEventListener('scroll', () => {
+      if (dragging) return;
+      updateThumb();
+    });
+
+    // Drag thumb
+    const onPointerMove = (e) => {
+      if (!dragging) return;
+      const dy = (e.clientY - dragStartY);
+      scrollToThumbPosition(dragStartThumbTop + dy, { snap: false });
+      e.preventDefault();
+    };
+
+    const stopDrag = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      document.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerup', stopDrag);
+      document.removeEventListener('pointercancel', stopDrag);
+
+      // best-effort release pointer capture
+      try {
+        if (e && typeof e.pointerId === 'number') {
+          detailVideoScrollbarThumb.releasePointerCapture(e.pointerId);
+        }
+      } catch (err) {
+        // ignore
+      }
+    };
+
+    detailVideoScrollbarThumb.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      dragStartY = e.clientY;
+
+      // Ensure thumb is up-to-date before reading position
+      updateThumb();
+      dragStartThumbTop = getCurrentThumbTop();
+
+      try {
+        detailVideoScrollbarThumb.setPointerCapture(e.pointerId);
+      } catch (err) {
+        // ignore
+      }
+      document.addEventListener('pointermove', onPointerMove, { passive: false });
+      document.addEventListener('pointerup', stopDrag);
+      document.addEventListener('pointercancel', stopDrag);
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    // Click track to jump (center thumb on click)
+    detailVideoScrollbar.addEventListener('click', (e) => {
+      if (dragging) return;
+
+      const target = e.target;
+      if (target === detailVideoScrollbarThumb) return;
+
+      const rect = detailVideoScrollbar.getBoundingClientRect();
+      const rawY = e.clientY - rect.top - TRACK_PADDING;
+
+      const thumbH = Math.max(24, detailVideoScrollbarThumb.offsetHeight || 24);
+      const desiredTop = rawY - (thumbH / 2);
+
+      scrollToThumbPosition(desiredTop, { snap: true });
+    });
+
+    // Recalc on resize
+    window.addEventListener('resize', () => updateThumb());
+
+    // Observe content changes
+    try {
+      const ro = new ResizeObserver(() => updateThumb());
+      ro.observe(detailVideoResults);
+    } catch (e) {
+      // ignore
+    }
+
+    // Initial
+    updateThumb();
+  }
 
   function extractParentPostIdFromText(text) {
     const raw = String(text || '').trim();
@@ -1944,6 +2105,7 @@
     bindDetailVideoAdvancedToggle();
     bindDetailVideoDownloads();
     bindDetailVideoClearButton();
+    bindCustomVideoScrollbar();
     setVideoButtons(false);
     setVideoStatus('未开始');
     ensureBuildTagVisible();

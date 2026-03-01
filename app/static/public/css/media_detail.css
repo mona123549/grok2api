@@ -945,16 +945,15 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
 
     display: flex;
     flex-direction: column;
+
+    /* Reserve visual space for the always-visible custom scrollbar (T11) */
+    padding-left: 22px;
   }
 
   .media-detail-video-results {
     flex: 1;
     min-height: 0; /* critical for flex overflow scrolling */
-
-    /* Always show a (thin) scrollbar and keep it on the LEFT edge */
-    overflow-y: scroll;
-    overflow-x: hidden;
-    direction: rtl;
+    overflow: auto;
 
     /* Stabilize scrollbar reservation to avoid layout width "jumps" */
     scrollbar-gutter: stable;
@@ -963,51 +962,16 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
     overscroll-behavior: contain;
     touch-action: pan-y;
 
-    /* Remove the "scrollbar gutter" */
-    padding-right: 0;
-
     scroll-snap-type: y proximity;
 
-    /* Scrollbar: keep visible (thin) to explicitly control left list scrolling */
-    scrollbar-width: thin; /* Firefox */
-    scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
-  }
-
-  /* Restore normal text/layout direction for list items (only move the scrollbar to the left) */
-  .media-detail-video-results > * {
-    direction: ltr;
-  }
-
-  html[data-theme='dark'] .media-detail-video-results {
-    scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+    /* Hide native scrollbars (we use a custom always-visible scrollbar in T11) */
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge legacy */
   }
 
   .media-detail-video-results::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-
-  .media-detail-video-results::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .media-detail-video-results::-webkit-scrollbar-thumb {
-    background-color: rgba(0, 0, 0, 0.26);
-    border-radius: 999px;
-    border: 2px solid transparent;
-    background-clip: content-box;
-  }
-
-  .media-detail-video-results::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(0, 0, 0, 0.36);
-  }
-
-  html[data-theme='dark'] .media-detail-video-results::-webkit-scrollbar-thumb {
-    background-color: rgba(255, 255, 255, 0.22);
-  }
-
-  html[data-theme='dark'] .media-detail-video-results::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(255, 255, 255, 0.32);
+    width: 0;
+    height: 0;
   }
 
   /* Desktop: actions are an overlay (do not reserve height) */
@@ -1015,26 +979,54 @@ html[data-theme='dark'] .media-detail-video-item-actions [data-role="favorite"].
     z-index: 2;
   }
 
-  /* Optional: thin invisible wheel sensor (Grok-like) */
+  /* T11: always-visible custom scrollbar on the LEFT edge of the video column */
   .media-detail-video-column {
     position: relative;
   }
 
-  .media-detail-left-scroll-sensor {
+  .md-video-scrollbar {
     position: absolute;
+    left: 6px;
     top: 0;
     bottom: 0;
-
-    /* Try to sit in the grid gap between left column and stage */
-    right: -9px;
-    width: 14px;
-
-    z-index: 6;
-    background: transparent;
+    width: 12px;
+    z-index: 8;
     pointer-events: auto;
 
-    /* Avoid browser gestures competing with wheel delegation */
-    touch-action: none;
+    /* Make it always visible */
+    opacity: 1;
+  }
+
+  .md-video-scrollbar::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 10px;
+    bottom: 10px;
+    width: 6px;
+    transform: translateX(-50%);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.06);
+  }
+
+  html[data-theme='dark'] .md-video-scrollbar::before {
+    background: rgba(255, 255, 255, 0.10);
+  }
+
+  .md-video-scrollbar-thumb {
+    position: absolute;
+    left: 50%;
+    top: 10px;
+    width: 6px;
+    transform: translateX(-50%);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.28);
+    cursor: pointer;
+    min-height: 24px;
+  }
+
+  html[data-theme='dark'] .md-video-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.28);
   }
 
   /* Stage: occupy full column height so internal flex centering is true centering */
