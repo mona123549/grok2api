@@ -1,4 +1,9 @@
 (() => {
+  const BUILD_TAG = '0024a';
+
+  const buildTagText = document.getElementById('buildTagText');
+  if (buildTagText) buildTagText.textContent = `BUILD_TAG=${BUILD_TAG}`;
+
   const backToMediaBtn = document.getElementById('backToMediaBtn');
   const refreshBtn = document.getElementById('refreshBtn');
 
@@ -31,6 +36,19 @@
     // personal mode
     personalUnlocked: false,
     personalKey: '',
+
+    // cache source pagination (for mediaType=all in cache mode)
+    cacheAll: {
+      pageImage: 0,
+      pageVideo: 0,
+      totalImage: 0,
+      totalVideo: 0,
+      loadedImage: 0,
+      loadedVideo: 0,
+      hasMoreImage: true,
+      hasMoreVideo: true,
+      items: [],
+    },
   };
 
   function toast(message, type) {
@@ -156,6 +174,77 @@
     const favoriteOnly = Boolean(favoriteOnlyToggle && favoriteOnlyToggle.checked);
     const q = searchInput ? String(searchInput.value || '').trim() : '';
     return { mediaType, favoriteOnly, q };
+  }
+
+  function parseTimeToMs(value) {
+    if (value === null || value === undefined) return 0;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+    const raw = String(value || '').trim();
+    if (!raw) return 0;
+    // try number-like string
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+    // try ISO date string
+    const t = Date.parse(raw);
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  function getCacheSortKeyMs(item) {
+    if (!item || typeof item !== 'object') return 0;
+    const mediaType = String(item.media_type || '').trim() || '';
+    if (mediaType === 'video') {
+      const m = parseTimeToMs(item.mtime_ms);
+      if (m > 0) return m;
+    }
+    // image (cache index): updated_at preferred, fallback to created_at
+    const u = parseTimeToMs(item.updated_at);
+    if (u > 0) return u;
+    const c = parseTimeToMs(item.created_at);
+    if (c > 0) return c;
+    // fallback: any other time-like fields
+    return parseTimeToMs(item.mtime_ms);
+  }
+
+  function normalizeCacheIndexItems(items) {
+    const list = Array.isArray(items) ? items : [];
+    return list
+      .filter((it) => it && typeof it === 'object')
+      .map((it) => ({ ...it, cache_source: 'index' }));
+  }
+
+  function normalizeCacheListItems(items, defaultMediaType) {
+    const list = Array.isArray(items) ? items : [];
+    const mt = String(defaultMediaType || '').trim() || '';
+    return list
+      .filter((it) => it && typeof it === 'object')
+      .map((it) => {
+        const out = { ...it, cache_source: 'local' };
+        if (mt && !String(out.media_type || '').trim()) out.media_type = mt;
+        // align naming for deletion/dedupe
+        if (!String(out.file_name || '').trim()) {
+          const n = String(out.name || '').trim();
+          if (n) out.file_name = n;
+        }
+        return out;
+      });
+  }
+
+  function dedupeCacheItems(items) {
+    const list = Array.isArray(items) ? items : [];
+    const seen = new Set();
+    const out = [];
+    for (const it of list) {
+      if (!it || typeof it !== 'object') continue;
+      const src = String(it.cache_source || '').trim() || 'unknown';
+      const mt = String(it.media_type || '').trim() || '-';
+      const pid = String(it.parent_post_id || '').trim();
+      const fn = String(it.file_name || it.name || '').trim();
+      const key = `${src}:${mt}:${pid || fn || '-'}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(it);
+    }
+    return out;
   }
 
   async function ensureAuth() {
@@ -583,6 +672,8 @@
     if (!item || typeof item !== 'object') return;
 
     const mediaType = String(item.media_type || '').trim() || 'image';
+    const cacheSource = String(item.cache_source || '').trim() || (mediaType === 'video' ? 'local' : 'index');
+
     const parentPostId = String(item.parent_post_id || '').trim();
     const fileName = String(item.file_name || item.name || '').trim();
 
@@ -591,6 +682,36 @@
     if (btn) btn.disabled = true;
 
     try {
+      if (cacheSource === 'local') {
+        // directory-scan cache delete
+        const resp = await apiFetchJsonPersonal('/v1/public/personal/cache/item/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: mediaType,
+            name: fileName,
+          }),
+        });
+
+        const ok = Boolean(resp && resp.status === 'success' && resp.result && resp.result.deleted);
+        if (!ok) {
+          toast('删除失败', 'error');
+          return;
+        }
+
+        const card = btn ? btn.closest('.mlib-card') : null;
+        if (card) card.remove();
+
+        state.shown = Math.max(0, state.shown - 1);
+        state.total = Math.max(0, state.total - 1);
+        setCounts(state.total, state.shown);
+        renderEmptyIfNeeded();
+
+        toast('已删除', 'success');
+        return;
+      }
+
+      // cache index delete
       const resp = await apiFetchJsonPersonal('/v1/public/personal/cache_index/item/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -608,20 +729,16 @@
       }
 
       const card = btn ? btn.closest('.mlib-card') : null;
-      if (card) {
-        card.remove();
-      }
+      if (card) card.remove();
+
       state.shown = Math.max(0, state.shown - 1);
       state.total = Math.max(0, state.total - 1);
       setCounts(state.total, state.shown);
       renderEmptyIfNeeded();
 
       const fileDeleted = Boolean(resp && resp.file && resp.file.deleted);
-      if (!fileDeleted) {
-        toast('索引已删除（文件可能已不存在）', 'info');
-      } else {
-        toast('已删除', 'success');
-      }
+      if (!fileDeleted) toast('索引已删除（文件可能已不存在）', 'info');
+      else toast('已删除', 'success');
     } catch (e) {
       toast('删除失败', 'error');
     } finally {
@@ -640,10 +757,13 @@
     const url = String(item && item.view_url ? item.view_url : '').trim();
     const prompt = String(item && item.prompt ? item.prompt : '').trim();
 
+    const cacheSource = String(item && item.cache_source ? item.cache_source : '').trim() || (mediaType === 'video' ? 'local' : 'index');
+
     const card = document.createElement('div');
     card.className = 'mlib-card';
-    card.dataset.id = `cache_index:${mediaType}:${parentPostId || fileName || '-'}`;
+    card.dataset.id = `${cacheSource}:${mediaType}:${parentPostId || fileName || '-'}`;
     card.dataset.mediaType = mediaType;
+    card.dataset.cacheSource = cacheSource;
 
     // cache card: no favorite button
     if (mediaType === 'video') {
@@ -654,12 +774,34 @@
       video.setAttribute('playsinline', '');
       video.setAttribute('webkit-playsinline', '');
       video.preload = 'metadata';
+      video.loop = true;
+
       if (url) {
         const source = document.createElement('source');
         source.src = url;
         source.type = 'video/mp4';
         video.appendChild(source);
       }
+
+      // hover preview (only on hover-capable devices)
+      const canHover = Boolean(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+      if (canHover) {
+        video.addEventListener('mouseenter', () => {
+          try { video.currentTime = 0; } catch (e) { /* ignore */ }
+          try {
+            const p = video.play();
+            if (p && typeof p.catch === 'function') p.catch(() => { /* ignore */ });
+          } catch (e) {
+            // ignore
+          }
+        });
+
+        video.addEventListener('mouseleave', () => {
+          try { video.pause(); } catch (e) { /* ignore */ }
+          try { video.currentTime = 0; } catch (e) { /* ignore */ }
+        });
+      }
+
       card.appendChild(video);
     } else {
       const img = document.createElement('img');
@@ -815,31 +957,160 @@
           }
         }
 
-        const params = new URLSearchParams();
-        params.set('page', String(page));
-        params.set('page_size', String(state.pageSize));
+        // cache source strategy:
+        // - image: cache_index/list (image)
+        // - video: personal/cache/list (video)
+        // - all: merge cache_index(image) + cache_list(video), sorted by time desc
+        const cacheMode = (mediaType === 'image' || mediaType === 'video') ? mediaType : 'all';
 
-        // cache index API uses media_type=image|video (this plan focuses on image)
-        const mt = (mediaType === 'video' || mediaType === 'image') ? mediaType : 'image';
-        params.set('media_type', mt);
-        params.set('origin', 'media');
-        if (q) params.set('q', q);
+        if (cacheMode === 'image') {
+          const params = new URLSearchParams();
+          params.set('page', String(page));
+          params.set('page_size', String(state.pageSize));
+          params.set('media_type', 'image');
+          params.set('origin', 'media');
+          if (q) params.set('q', q);
 
-        const data = await apiFetchJsonPersonal(`/v1/public/personal/cache_index/list?${params.toString()}`, {
-          method: 'GET',
-        });
-        if (!data) return;
+          const data = await apiFetchJsonPersonal(`/v1/public/personal/cache_index/list?${params.toString()}`, {
+            method: 'GET',
+          });
+          if (!data) return;
 
-        const items = Array.isArray(data.items) ? data.items : [];
-        const total = Number(data.total || 0);
-        state.total = Number.isFinite(total) ? total : items.length;
+          const items = normalizeCacheIndexItems(data.items);
+          const total = Number(data.total || 0);
+          state.total = Number.isFinite(total) ? total : items.length;
 
-        const loaded = items.length;
+          const loaded = items.length;
+          state.page = page;
+          state.hasMore = (state.shown + loaded) < state.total && loaded > 0;
+
+          renderItems(items, append);
+          setStatus('已加载缓存（图片）', 'connected');
+          return;
+        }
+
+        if (cacheMode === 'video') {
+          if (q) {
+            // directory-scan cache list doesn't support q filtering
+            toast('缓存视频（目录扫描）暂不支持搜索过滤', 'info');
+          }
+
+          const params = new URLSearchParams();
+          params.set('type', 'video');
+          params.set('page', String(page));
+          params.set('page_size', String(state.pageSize));
+
+          const data = await apiFetchJsonPersonal(`/v1/public/personal/cache/list?${params.toString()}`, {
+            method: 'GET',
+          });
+          if (!data) return;
+
+          const items = normalizeCacheListItems(data.items, 'video');
+          const total = Number(data.total || 0);
+          state.total = Number.isFinite(total) ? total : items.length;
+
+          const loaded = items.length;
+          state.page = page;
+          state.hasMore = (state.shown + loaded) < state.total && loaded > 0;
+
+          renderItems(items, append);
+          setStatus('已加载缓存（视频）', 'connected');
+          return;
+        }
+
+        // cacheMode === 'all'
+        const perSourcePageSize = Math.max(1, Math.floor(state.pageSize / 2));
+
+        if (!append) {
+          state.cacheAll.pageImage = 0;
+          state.cacheAll.pageVideo = 0;
+          state.cacheAll.totalImage = 0;
+          state.cacheAll.totalVideo = 0;
+          state.cacheAll.loadedImage = 0;
+          state.cacheAll.loadedVideo = 0;
+          state.cacheAll.hasMoreImage = true;
+          state.cacheAll.hasMoreVideo = true;
+          state.cacheAll.items = [];
+        }
+
+        const wantImage = !append ? true : Boolean(state.cacheAll.hasMoreImage);
+        const wantVideo = !append ? true : Boolean(state.cacheAll.hasMoreVideo);
+
+        const nextPageImage = wantImage ? (state.cacheAll.pageImage + 1) : state.cacheAll.pageImage;
+        const nextPageVideo = wantVideo ? (state.cacheAll.pageVideo + 1) : state.cacheAll.pageVideo;
+
+        const tasks = [];
+
+        if (wantImage) {
+          const params = new URLSearchParams();
+          params.set('page', String(nextPageImage));
+          params.set('page_size', String(perSourcePageSize));
+          params.set('media_type', 'image');
+          params.set('origin', 'media');
+          if (q) params.set('q', q);
+
+          tasks.push(
+            apiFetchJsonPersonal(`/v1/public/personal/cache_index/list?${params.toString()}`, { method: 'GET' })
+              .then((d) => ({ ok: true, kind: 'image', data: d }))
+              .catch((e) => ({ ok: false, kind: 'image', error: e }))
+          );
+        }
+
+        if (wantVideo) {
+          if (q) {
+            // directory-scan cache list doesn't support q filtering
+            toast('缓存视频（目录扫描）暂不支持搜索过滤', 'info');
+          }
+
+          const params = new URLSearchParams();
+          params.set('type', 'video');
+          params.set('page', String(nextPageVideo));
+          params.set('page_size', String(perSourcePageSize));
+
+          tasks.push(
+            apiFetchJsonPersonal(`/v1/public/personal/cache/list?${params.toString()}`, { method: 'GET' })
+              .then((d) => ({ ok: true, kind: 'video', data: d }))
+              .catch((e) => ({ ok: false, kind: 'video', error: e }))
+          );
+        }
+
+        const results = await Promise.all(tasks);
+        for (const r of results) {
+          if (!r || !r.ok) {
+            throw (r && r.error) ? r.error : new Error('request_failed');
+          }
+          if (r.kind === 'image') {
+            const total = Number(r.data && r.data.total ? r.data.total : 0);
+            state.cacheAll.totalImage = Number.isFinite(total) ? total : 0;
+
+            const items = normalizeCacheIndexItems(r.data && r.data.items ? r.data.items : []);
+            state.cacheAll.pageImage = nextPageImage;
+            state.cacheAll.loadedImage += items.length;
+            state.cacheAll.items = state.cacheAll.items.concat(items);
+          } else if (r.kind === 'video') {
+            const total = Number(r.data && r.data.total ? r.data.total : 0);
+            state.cacheAll.totalVideo = Number.isFinite(total) ? total : 0;
+
+            const items = normalizeCacheListItems(r.data && r.data.items ? r.data.items : [], 'video');
+            state.cacheAll.pageVideo = nextPageVideo;
+            state.cacheAll.loadedVideo += items.length;
+            state.cacheAll.items = state.cacheAll.items.concat(items);
+          }
+        }
+
+        state.cacheAll.items = dedupeCacheItems(state.cacheAll.items);
+        state.cacheAll.items.sort((a, b) => getCacheSortKeyMs(b) - getCacheSortKeyMs(a));
+
+        state.cacheAll.hasMoreImage = state.cacheAll.loadedImage < state.cacheAll.totalImage;
+        state.cacheAll.hasMoreVideo = state.cacheAll.loadedVideo < state.cacheAll.totalVideo;
+
+        state.total = (state.cacheAll.totalImage || 0) + (state.cacheAll.totalVideo || 0);
         state.page = page;
-        state.hasMore = (state.shown + loaded) < state.total && loaded > 0;
+        state.hasMore = Boolean(state.cacheAll.hasMoreImage || state.cacheAll.hasMoreVideo);
 
-        renderItems(items, append);
-        setStatus('已加载缓存', 'connected');
+        // For "all" mode, we re-render the whole list to keep global time ordering stable.
+        renderItems(state.cacheAll.items, false);
+        setStatus('已加载缓存（全部）', 'connected');
         return;
       }
 
